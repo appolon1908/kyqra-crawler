@@ -4,26 +4,34 @@
   "version": "1.1.0",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-static.mjs",
     "start": "node dist/main.js",
-    "lint": "eslint src/**/*.ts test/**/*.mjs eslint.config.js",
+    "migrate": "node dist/storage/postgres/migrate.js",
+    "migrate:up": "node dist/storage/postgres/migrate.js up",
+    "migrate:down": "node dist/storage/postgres/migrate.js down",
+    "migrate:down:all": "node dist/storage/postgres/migrate.js down all",
+    "lint": "eslint src/**/*.ts test/**/*.ts vitest.config.ts eslint.config.js",
     "format": "prettier --write .",
     "format-check": "prettier --check .",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs",
-    "test:unit": "node --test test/unit.test.mjs",
-    "test:integration": "node --test test/integration.test.mjs",
-    "test:security": "node --test test/security.test.mjs",
-    "test:policy": "node --test test/policy.test.mjs test/release-signing-policy.test.mjs",
-    "test:release-signing": "node --test test/release-signing-policy.test.mjs && ./scripts/validate-release-signing-policy.sh"
+    "test": "vitest run --coverage",
+    "test:unit": "vitest run test/unit test/fixture-site.test.ts",
+    "test:integration": "vitest run test/integration",
+    "test:migrations": "vitest run test/integration/migrations.test.ts",
+    "test:security": "vitest run test/unit/core.test.ts",
+    "test:policy": "./scripts/validate-public-policy.sh && ./scripts/validate-mtls-config.sh",
+    "test:release-signing": "./scripts/validate-release-signing-policy.sh && ./scripts/validate-production-publisher-policy.sh",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "@crawlee/cheerio": "3.18.1",
     "@crawlee/core": "3.18.1",
     "@crawlee/playwright": "3.18.1",
     "bullmq": "5.81.3",
+    "cheerio": "1.2.0",
     "fastify": "5.12.1",
     "ioredis": "5.7.0",
+    "node-pg-migrate": "9.0.0",
     "pg": "8.16.3",
     "playwright": "1.62.1",
     "undici": "7.29.0",
@@ -31,14 +39,25 @@
   },
   "devDependencies": {
     "@eslint/js": "9.34.0",
+    "@testcontainers/postgresql": "12.1.0",
+    "@testcontainers/redis": "12.1.0",
+    "@types/express": "5.0.6",
     "@types/node": "22.18.0",
     "@types/pg": "8.15.5",
+    "@types/supertest": "7.2.1",
+    "@vitest/coverage-v8": "4.1.11",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "eslint": "9.34.0",
+    "express": "5.2.1",
     "prettier": "3.6.2",
+    "supertest": "7.2.2",
+    "testcontainers": "12.1.0",
     "typescript": "5.9.2",
-    "typescript-eslint": "8.42.0"
+    "typescript-eslint": "8.42.0",
+    "vitest": "4.1.11"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.12.0"
   }
 }

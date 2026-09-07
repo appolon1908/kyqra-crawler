@@ -23,6 +23,13 @@ CURRENT_BACKUP="$STATE/current-backup"
 LOG='/var/log/codestra-kyqra-remediation.log'
 PUBKEY='/etc/codestra/kyqra-remediation-release-signing.pub'
 LOCK='/run/lock/codestra-kyqra-remediation.lock'
+REDIS_IMAGE='redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2'
+REDIS_CONTAINER='kyqra-crawler-redis-1'
+POSTGRES_CONTAINER='kyqra-crawler-postgres-1'
+declare -ar APP_SERVICES=(api http-worker browser-worker callback-worker)
+BACKUP_IN_PROGRESS=0
+BACKUP_PATH=''
+REDIS_QUIESCED=0
 
 die() { printf 'ERROR=%s\n' "$1" >&2; exit 1; }
 record() {
@@ -114,8 +121,13 @@ prepare_principals() {
 }
 
 validate_configs() {
-  KYQRA_IMAGE="$EXPECTED_IMAGE" KYQRA_ENV_FILE="$APP/.env" KYQRA_SERVICE_PRINCIPALS_FILE="$PRINCIPALS" KYQRA_SECRETS_GID="$(getent group "$PRINCIPALS_GROUP" | cut -d: -f3)" POSTGRES_PASSWORD="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$APP/.env")" \
-    docker compose --project-directory "$APP" -f "$RELEASE/docker-compose.yml" config --quiet || die COMPOSE_INVALID
+  local compose_json
+  compose_json=$(KYQRA_IMAGE="$EXPECTED_IMAGE" KYQRA_ENV_FILE="$APP/.env" KYQRA_SERVICE_PRINCIPALS_FILE="$PRINCIPALS" KYQRA_SECRETS_GID="$(getent group "$PRINCIPALS_GROUP" | cut -d: -f3)" POSTGRES_PASSWORD="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$APP/.env")" \
+    docker compose --project-directory "$APP" -f "$RELEASE/docker-compose.yml" config --format json) || die COMPOSE_INVALID
+  jq -e '
+    (.services.migrate.command == ["node", "dist/storage/postgres/migrate.js", "up"]) and
+    (.services.api.depends_on.migrate.condition == "service_completed_successfully")
+  ' <<<"$compose_json" >/dev/null || die MIGRATION_GATE_MISSING
   /usr/sbin/nginx -t -c "$RELEASE/nginx-test.conf" -p /etc/nginx/ >/dev/null 2>&1 || die NGINX_STAGING_INVALID
   grep -Fq '127.0.0.1:3100:3000' "$RELEASE/docker-compose.yml" || die LOOPBACK_BINDING_MISSING
   ! grep -Eq '(0\.0\.0\.0|10\.40\.0\.4):3100:3000' "$RELEASE/docker-compose.yml" || die RAW_BACKEND_EXPOSED
@@ -127,6 +139,9 @@ preflight_runtime() {
   ss -ltnH | awk '{print $4}' | grep -Fxq '10.40.0.4:3100' || die KYQRA_3100_NOT_OWNED
   docker inspect kyqra-crawler-api-1 >/dev/null 2>&1 || die KYQRA_API_ABSENT
   docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' kyqra-crawler-api-1 | grep -Fxq kyqra-crawler || die KYQRA_CONTAINER_IDENTITY_INVALID
+  docker inspect -f '{{.State.Running}}' "$POSTGRES_CONTAINER" | grep -Fxq true || die KYQRA_POSTGRES_NOT_RUNNING
+  docker inspect -f '{{.State.Running}}' "$REDIS_CONTAINER" | grep -Fxq true || die KYQRA_REDIS_NOT_RUNNING
+  [[ "$(docker inspect -f '{{.Config.Image}}' "$REDIS_CONTAINER")" == "$REDIS_IMAGE" ]] || die KYQRA_REDIS_IMAGE_MISMATCH
   df -Pk "$STATE" | awk 'NR==2{exit !($4>=1048576)}' || die BACKUP_SPACE_INSUFFICIENT
   safe_regular "$RELEASE/kyqra-image.tar"
   docker image inspect "$EXPECTED_IMAGE" >/dev/null 2>&1 || docker load -i "$RELEASE/kyqra-image.tar" >/dev/null
@@ -137,20 +152,174 @@ preflight_runtime() {
   done
 }
 
+container_for_service() {
+  case "$1" in
+    api) printf 'kyqra-crawler-api-1\n' ;;
+    http-worker) printf 'kyqra-crawler-http-worker-1\n' ;;
+    browser-worker) printf 'kyqra-crawler-browser-worker-1\n' ;;
+    callback-worker) printf 'kyqra-crawler-callback-worker-1\n' ;;
+    *) die INVALID_APPLICATION_SERVICE ;;
+  esac
+}
+
+compose_app() {
+  local image=$1
+  shift
+  (cd "$APP" && KYQRA_IMAGE="$image" KYQRA_SERVICE_PRINCIPALS_FILE="$PRINCIPALS" KYQRA_SECRETS_GID="$(getent group "$PRINCIPALS_GROUP" | cut -d: -f3)" docker compose -p kyqra-crawler -f docker-compose.yml "$@")
+}
+
+capture_running_services() {
+  local destination=$1 service container state
+  : >"$destination"
+  for service in "${APP_SERVICES[@]}"; do
+    container=$(container_for_service "$service")
+    state=$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null) || die KYQRA_APPLICATION_CONTAINER_ABSENT
+    case "$state" in
+      true) printf '%s\n' "$service" >>"$destination" ;;
+      false) ;;
+      *) die KYQRA_APPLICATION_STATE_INVALID ;;
+    esac
+  done
+  grep -Fxq api "$destination" || die KYQRA_API_NOT_RUNNING
+}
+
+validate_running_services() {
+  local source=$1 service
+  [[ -f "$source" && ! -L "$source" ]] || die RUNNING_SERVICE_SET_INVALID
+  while IFS= read -r service; do
+    case "$service" in
+      api|http-worker|browser-worker|callback-worker) ;;
+      *) die RUNNING_SERVICE_SET_INVALID ;;
+    esac
+  done <"$source"
+  [[ "$(sort -u "$source" | wc -l)" -eq "$(wc -l <"$source")" ]] || die RUNNING_SERVICE_SET_INVALID
+  grep -Fxq api "$source" || die RUNNING_SERVICE_SET_INVALID
+}
+
+start_recorded_services() {
+  local source=$1 image=$2 service
+  local -a services=()
+  validate_running_services "$source"
+  while IFS= read -r service; do services+=("$service"); done <"$source"
+  compose_app "$image" up -d --no-deps --force-recreate "${services[@]}" >/dev/null
+}
+
+wait_for_redis() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -Fxq PONG && return 0
+    sleep 1
+  done
+  die KYQRA_REDIS_RESTART_FAILED
+}
+
+redis_volume_name() {
+  local volume
+  volume=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$REDIS_CONTAINER")
+  [[ "$volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] || die REDIS_VOLUME_INVALID
+  printf '%s\n' "$volume"
+}
+
+backup_redis_volume() {
+  local backup=$1 volume=$2
+  docker run --rm --network none --read-only --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges --user 0:0 \
+    --mount "type=volume,src=$volume,dst=/data,readonly" \
+    --mount "type=bind,src=$backup,dst=/backup" \
+    "$REDIS_IMAGE" /bin/sh -ceu 'tar -C /data -cf /backup/redis-data.tar .'
+  [[ -s "$backup/redis-data.tar" ]] || die REDIS_BACKUP_EMPTY
+}
+
+restore_redis_volume() {
+  local backup=$1 volume=$2 current_volume
+  [[ -f "$backup/redis-data.tar" && ! -L "$backup/redis-data.tar" ]] || die REDIS_BACKUP_INVALID
+  current_volume=$(redis_volume_name)
+  [[ "$current_volume" == "$volume" ]] || die REDIS_VOLUME_MISMATCH
+  docker run --rm --network none --read-only --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --security-opt no-new-privileges --user 0:0 \
+    --mount "type=volume,src=$volume,dst=/data" \
+    --mount "type=bind,src=$backup,dst=/backup,readonly" \
+    "$REDIS_IMAGE" /bin/sh -ceu \
+    'find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- "{}" ";"; tar -C /data -xf /backup/redis-data.tar'
+}
+
+previous_image() {
+  local image service container observed
+  image=$(docker inspect -f '{{.Image}}' kyqra-crawler-api-1)
+  [[ "$image" =~ ^sha256:[0-9a-f]{64}$ ]] || die PREVIOUS_IMAGE_INVALID
+  for service in "${APP_SERVICES[@]}"; do
+    container=$(container_for_service "$service")
+    observed=$(docker inspect -f '{{.Image}}' "$container")
+    [[ "$observed" == "$image" ]] || die PREVIOUS_IMAGE_SET_MISMATCH
+  done
+  printf '%s\n' "$image"
+}
+
+restore_prebackup_runtime() {
+  local service container
+  if (( REDIS_QUIESCED )); then
+    docker start "$REDIS_CONTAINER" >/dev/null
+    wait_for_redis
+    REDIS_QUIESCED=0
+  fi
+  if [[ -n "$BACKUP_PATH" && -f "$BACKUP_PATH/running-services" ]]; then
+    validate_running_services "$BACKUP_PATH/running-services"
+    while IFS= read -r service; do
+      container=$(container_for_service "$service")
+      docker start "$container" >/dev/null
+    done <"$BACKUP_PATH/running-services"
+  fi
+}
+
+on_install_exit() {
+  local rc=$1
+  (( rc != 0 )) || return 0
+  trap - ERR EXIT
+  op=automatic-rollback
+  if (( BACKUP_IN_PROGRESS )); then
+    restore_prebackup_runtime || true
+  else
+    do_rollback || true
+  fi
+  exit "$rc"
+}
+
 create_backup() {
-  local stamp backup
-  stamp=$(date -u +%Y%m%dT%H%M%SZ); backup="$BACKUPS/$stamp"
+  local stamp backup redis_volume image pointer_tmp
+  stamp=$(date -u +%Y%m%dT%H%M%SZ); backup="$BACKUPS/$stamp-$$"
+  [[ ! -e "$backup" ]] || die BACKUP_PATH_EXISTS
+  BACKUP_IN_PROGRESS=1
+  BACKUP_PATH=$backup
   install -d -o root -g root -m 0700 "$backup"
+  capture_running_services "$backup/running-services"
+  image=$(previous_image)
+  printf '%s\n' "$image" >"$backup/previous-image"
+  redis_volume=$(redis_volume_name)
+  printf '%s\n' "$redis_volume" >"$backup/redis-volume"
+
+  # This is the single storage cutover. No API or worker may write after it.
+  compose_app "$image" stop "${APP_SERVICES[@]}" >/dev/null
+  REDIS_QUIESCED=1
+  compose_app "$image" stop redis >/dev/null
+  backup_redis_volume "$backup" "$redis_volume"
+  docker exec "$POSTGRES_CONTAINER" pg_dump -U crawler -d crawler -Fc >"$backup/crawler.dump"
+
   install -m 0600 "$APP/docker-compose.yml" "$backup/docker-compose.yml"
   tar -C "$APP" -czf "$backup/src.tgz" src
   install -m 0600 "$PUBLIC_NGINX" "$backup/kyqra-crawler.conf"
   [[ -f "$PRIVATE_NGINX" ]] && install -m 0600 "$PRIVATE_NGINX" "$backup/codestra-kyqra-mtls.conf" || : >"$backup/private-nginx.absent"
   /usr/sbin/ufw status numbered >"$backup/ufw-before.txt"
   docker inspect kyqra-crawler-api-1 >"$backup/api-inspect.json"
-  docker exec kyqra-crawler-postgres-1 pg_dump -U crawler -d crawler -Fc >"$backup/crawler.dump"
-  printf '%s\n' "$backup" >"$CURRENT_BACKUP"
-  chmod 0600 "$CURRENT_BACKUP" "$backup"/*
+  chmod 0600 "$backup"/*
   (cd "$backup" && sha256sum * >SHA256SUMS && sha256sum -c SHA256SUMS >/dev/null)
+  chmod 0600 "$backup/SHA256SUMS"
+
+  docker start "$REDIS_CONTAINER" >/dev/null
+  wait_for_redis
+  REDIS_QUIESCED=0
+  pointer_tmp="$STATE/.current-backup.$$"
+  printf '%s\n' "$backup" >"$pointer_tmp"
+  chmod 0600 "$pointer_tmp"
+  mv -T "$pointer_tmp" "$CURRENT_BACKUP"
+  BACKUP_IN_PROGRESS=0
 }
 
 runtime_verify() {
@@ -165,21 +334,37 @@ runtime_verify() {
 }
 
 do_rollback() {
-  local backup
+  local backup image redis_volume
   [[ -f "$CURRENT_BACKUP" && ! -L "$CURRENT_BACKUP" ]] || die ROLLBACK_POINTER_ABSENT
   backup=$(<"$CURRENT_BACKUP")
   [[ "$backup" == "$BACKUPS"/* && -d "$backup" && ! -L "$backup" ]] || die ROLLBACK_PATH_INVALID
   (cd "$backup" && sha256sum -c SHA256SUMS >/dev/null) || die BACKUP_CHECKSUM_INVALID
+  validate_running_services "$backup/running-services"
+  image=$(<"$backup/previous-image")
+  [[ "$image" =~ ^sha256:[0-9a-f]{64}$ ]] || die PREVIOUS_IMAGE_INVALID
+  docker image inspect "$image" >/dev/null 2>&1 || die PREVIOUS_IMAGE_ABSENT
+  redis_volume=$(<"$backup/redis-volume")
+  [[ "$redis_volume" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] || die REDIS_VOLUME_INVALID
+
+  # Keep every writer stopped until PostgreSQL and Redis are both restored.
+  compose_app "$EXPECTED_IMAGE" stop "${APP_SERVICES[@]}" >/dev/null
+  compose_app "$EXPECTED_IMAGE" stop redis >/dev/null
   install -m 0644 "$backup/docker-compose.yml" "$APP/docker-compose.yml"
   rm -rf "$APP/src.rollback-staging"; install -d -o root -g root -m 0755 "$APP/src.rollback-staging"
   tar -C "$APP/src.rollback-staging" --strip-components=1 -xzf "$backup/src.tgz"
   rm -rf "$APP/src"; mv "$APP/src.rollback-staging" "$APP/src"
   install -m 0644 "$backup/kyqra-crawler.conf" "$PUBLIC_NGINX"; install -m 0644 "$backup/kyqra-crawler.conf" "$ENABLED_NGINX"
   if [[ -f "$backup/private-nginx.absent" ]]; then rm -f "$PRIVATE_NGINX"; else install -m 0644 "$backup/codestra-kyqra-mtls.conf" "$PRIVATE_NGINX"; fi
+  docker exec "$POSTGRES_CONTAINER" dropdb --if-exists --force -U crawler crawler
+  docker exec "$POSTGRES_CONTAINER" createdb -U crawler -O crawler crawler
+  docker exec -i "$POSTGRES_CONTAINER" pg_restore --exit-on-error --single-transaction --no-owner -U crawler -d crawler <"$backup/crawler.dump"
+  restore_redis_volume "$backup" "$redis_volume"
+  docker start "$REDIS_CONTAINER" >/dev/null
+  wait_for_redis
   /usr/sbin/nginx -t >/dev/null 2>&1; systemctl reload nginx
   /usr/sbin/ufw --force delete allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 18444 proto tcp >/dev/null 2>&1 || true
   /usr/sbin/ufw allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 3100 proto tcp comment 'Middleware to Kyqra private API' >/dev/null
-  (cd "$APP" && KYQRA_SERVICE_PRINCIPALS_FILE="$PRINCIPALS" KYQRA_SECRETS_GID="$(getent group "$PRINCIPALS_GROUP" | cut -d: -f3)" docker compose -p kyqra-crawler -f docker-compose.yml up -d --no-deps --force-recreate api >/dev/null)
+  start_recorded_services "$backup/running-services" "$image"
   curl -fsS --max-time 10 http://127.0.0.1:3100/health >/dev/null
   record PASS
   printf 'ROLLBACK=PASS\n'
@@ -199,8 +384,9 @@ case "$op" in
     ;;
   install)
     prepare_principals
-    verify_release; verify_certificates; verify_principals; validate_configs; preflight_runtime; create_backup
-    trap 'rc=$?; trap - ERR; op=automatic-rollback; do_rollback || true; exit $rc' ERR
+    verify_release; verify_certificates; verify_principals; validate_configs; preflight_runtime
+    trap 'on_install_exit $?' EXIT
+    create_backup
     install -m 0644 "$RELEASE/docker-compose.yml" "$APP/docker-compose.yml"
     rm -rf "$APP/src.install-staging"; install -d -o root -g root -m 0755 "$APP/src.install-staging"
     tar -C "$APP/src.install-staging" -xzf "$RELEASE/src.tgz"
@@ -210,12 +396,13 @@ case "$op" in
     install -m 0644 "$RELEASE/codestra-kyqra-mtls.conf" "$PRIVATE_NGINX"
     /usr/sbin/nginx -t >/dev/null 2>&1
     /usr/sbin/ufw allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 18444 proto tcp comment 'Middleware to Kyqra mTLS API' >/dev/null
-    (cd "$APP" && KYQRA_IMAGE="$EXPECTED_IMAGE" KYQRA_SERVICE_PRINCIPALS_FILE="$PRINCIPALS" KYQRA_SECRETS_GID="$(getent group "$PRINCIPALS_GROUP" | cut -d: -f3)" docker compose -p kyqra-crawler -f docker-compose.yml up -d --no-deps --force-recreate api >/dev/null)
+    compose_app "$EXPECTED_IMAGE" run --rm --no-deps migrate >/dev/null
+    compose_app "$EXPECTED_IMAGE" up -d --no-deps --force-recreate "${APP_SERVICES[@]}" >/dev/null
     systemctl reload nginx
     for _ in $(seq 1 30); do curl -fsS --max-time 3 http://127.0.0.1:3100/readyz >/dev/null 2>&1 && break; sleep 1; done
     /usr/sbin/ufw --force delete allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 3100 proto tcp >/dev/null
     runtime_verify
-    trap - ERR; record PASS; printf 'INSTALL=PASS\n'
+    trap - EXIT; record PASS; printf 'INSTALL=PASS\n'
     ;;
   verify)
     verify_release; verify_certificates; verify_principals; runtime_verify; record PASS; printf 'VERIFY=PASS\n'

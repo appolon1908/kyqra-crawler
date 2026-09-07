@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-node --test test/policy.test.mjs
+npm run test:integration
 echo 'PUBLIC_ROUTE_POLICY_TESTS=PASS'
