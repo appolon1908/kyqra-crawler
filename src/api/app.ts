@@ -8,7 +8,6 @@ import { isCallbackAllowed, validateCrawlTarget } from '../delivery/security.js'
 import { crawlQueueForSpec, removeCrawlJob } from '../queues/crawl.js';
 import {
   cancelJob,
-  checkPostgresReady,
   createJob,
   findIdempotentJob,
   getJobPayload,
@@ -24,6 +23,12 @@ import type { Runtime } from '../types.js';
 import { authenticate } from './auth.js';
 import { registerCanonicalApi } from './canonical.js';
 import { dashboardHtml } from './dashboard.js';
+import {
+  deepReadiness,
+  shallowLiveness,
+  startInternalApi,
+  type ReadinessResult,
+} from './health.js';
 import { executeDurableCommand, requireCommandHeaders, semanticHash } from './idempotency.js';
 
 interface JobParams {
@@ -38,16 +43,10 @@ interface WebhookTestBody {
   url?: string;
 }
 
-const publicPaths = [
-  '/',
-  '/health',
-  '/healthz',
-  '/readyz',
-  '/health/live',
-  '/health/ready',
-  '/api/v1/health',
-  '/openapi.json',
-];
+// Only shallow probes stay public. `/health`, `/readyz`, and `/health/ready` run Redis
+// and PostgreSQL probes, so on this listener they require bearer authentication; the
+// unauthenticated copies live on the internal listener in `./health.js`.
+const publicPaths = ['/', '/healthz', '/health/live', '/api/v1/health', '/openapi.json'];
 
 const csvEscape = (value: unknown): string => `"${String(value ?? '').replaceAll('"', '""')}"`;
 
@@ -115,17 +114,12 @@ const isUniqueViolation = (error: unknown): boolean =>
 
 export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
   const app = Fastify({ bodyLimit: 2_000_000 });
-  const live = async (): Promise<{ status: string }> => ({ status: 'ok' });
-  const ready = async (): Promise<{ status: string; redis: string; postgres: string }> => {
-    await runtime.redis.ping();
-    await checkPostgresReady(runtime.db);
-    return { status: 'ok', redis: 'ok', postgres: 'ok' };
-  };
+  const ready = async (): Promise<ReadinessResult> => deepReadiness(runtime);
 
   app.get('/health', ready);
-  app.get('/healthz', live);
+  app.get('/healthz', shallowLiveness);
   app.get('/readyz', ready);
-  app.get('/api/v1/health', live);
+  app.get('/api/v1/health', shallowLiveness);
   app.addHook('onRequest', (request, reply, done) => {
     if (publicPaths.includes(request.url)) done();
     else authenticate(request, reply, done);
@@ -359,8 +353,14 @@ export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
   return app;
 };
 
-export const startApi = async (runtime: Runtime): Promise<FastifyInstance> => {
+export interface StartedApi {
+  app: FastifyInstance;
+  internal: FastifyInstance;
+}
+
+export const startApi = async (runtime: Runtime): Promise<StartedApi> => {
   const app = await buildApi(runtime);
+  const internal = await startInternalApi(runtime);
   await app.listen({ host: '0.0.0.0', port: 3000 });
-  return app;
+  return { app, internal };
 };

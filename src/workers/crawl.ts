@@ -19,6 +19,7 @@ import {
 import { createPinnedCrawlProxy, type PinnedCrawlProxy } from '../delivery/pinned-proxy.js';
 import { extractGenericData } from '../extract/generic.js';
 import { canonicalizeUrl, urlHash } from '../frontier/canonicalize.js';
+import { createRobotsCache, type RobotsCache } from '../frontier/robots.js';
 import { log } from '../observability/logger.js';
 import {
   queueCompletionCallbacks,
@@ -71,10 +72,14 @@ const transformDiscoveredRequest = (
   roots: string[],
   spec: JobSpec,
   depth: number,
+  robots: RobotsCache,
 ): RequestOptions | false => {
   try {
     const normalized = canonicalizeUrl(request.url);
     if (!shouldEnqueue(normalized, roots, spec)) return false;
+    // Robots policies for every seed origin are loaded before the crawl starts, and
+    // discovered links are same-hostname, so this cached decision is authoritative.
+    if (!robots.isAllowedCached(normalized)) return false;
     request.url = normalized;
     request.userData = { depth: depth + 1 };
     return request;
@@ -136,6 +141,7 @@ export const processCrawlJob = async (
   const guardTarget = async (rawUrl: string): Promise<void> => {
     await resolveTarget(rawUrl);
   };
+  const robots = createRobotsCache({ resolveTarget });
   const routedPages = new WeakSet<object>();
   if (!(await markJobRunning(runtime.db, jobId))) {
     job.discard();
@@ -165,10 +171,33 @@ export const processCrawlJob = async (
 
   try {
     await Promise.all(spec.startUrls.map((url) => guardTarget(url)));
+    // Robots policies are cached before the frontier exists, so no disallowed URL is
+    // ever enqueued and the declared crawl-delay can bound the per-host request rate.
+    await Promise.all(spec.startUrls.map((url) => robots.policyFor(url)));
+    const permittedSeeds = spec.startUrls.filter((url) => robots.isAllowedCached(url));
+    if (permittedSeeds.length < spec.startUrls.length) {
+      log('warn', 'robots_seeds_disallowed', {
+        jobId,
+        disallowed: spec.startUrls.length - permittedSeeds.length,
+      });
+    }
+    const declaredSitemaps = robots.sitemaps();
+    if (declaredSitemaps.length > 0) {
+      // Sitemap-driven discovery is scheduled for M7; M3 only records the declaration.
+      log('info', 'robots_sitemaps_declared', { jobId, count: declaredSitemaps.length });
+    }
+    if (permittedSeeds.length === 0) {
+      job.discard();
+      throw new NonRetryableError('robots_disallowed_all_seeds');
+    }
+    commonOptions.sameDomainDelaySecs = Math.max(
+      1 / spec.requestsPerSecond,
+      robots.maxCrawlDelaySeconds(),
+    );
     requestQueue = await RequestQueue.open(`job-${jobId}-${job.timestamp}-${job.attemptsMade}`, {
       config: crawlConfiguration,
     });
-    for (const url of spec.startUrls) {
+    for (const url of permittedSeeds) {
       await requestQueue.addRequest({ url: canonicalizeUrl(url), userData: { depth: 0 } });
     }
     if (useBrowser) {
@@ -184,6 +213,9 @@ export const processCrawlJob = async (
                 throw new NonRetryableError('job_no_longer_running');
               }
               await guardTarget(request.url);
+              if (!robots.isAllowedCached(request.url)) {
+                throw new NonRetryableError('robots_disallowed');
+              }
               if (routedPages.has(page)) return;
               routedPages.add(page);
               // Every page, popup, iframe, and WebSocket remains confined to
@@ -225,7 +257,7 @@ export const processCrawlJob = async (
               await context.enqueueLinks({
                 strategy: 'same-hostname',
                 transformRequestFunction: (request) =>
-                  transformDiscoveredRequest(request, roots, spec, depth),
+                  transformDiscoveredRequest(request, roots, spec, depth, robots),
               });
             }
           },
@@ -244,13 +276,19 @@ export const processCrawlJob = async (
                 throw new NonRetryableError('job_no_longer_running');
               }
               await guardTarget(request.url);
+              if (!robots.isAllowedCached(request.url)) {
+                throw new NonRetryableError('robots_disallowed');
+              }
               gotOptions.dnsLookup = await createPinnedCrawlLookup(request.url, resolveTarget);
               gotOptions.maxRedirects = 5;
               gotOptions.followRedirect = (response) => {
                 const location = response.headers.location;
                 if (!location) return false;
-                validateCrawlRedirectTarget(location, response.url);
-                return true;
+                const target = validateCrawlRedirectTarget(location, response.url);
+                // Only origins whose robots.txt is already cached are judged here; an
+                // unknown origin still passes the target policy above before connecting.
+                const known = robots.peek(target);
+                return !known || known.isAllowed(target);
               };
             },
           ],
@@ -264,7 +302,7 @@ export const processCrawlJob = async (
               await context.enqueueLinks({
                 strategy: 'same-hostname',
                 transformRequestFunction: (request) =>
-                  transformDiscoveredRequest(request, roots, spec, depth),
+                  transformDiscoveredRequest(request, roots, spec, depth, robots),
               });
             }
           },

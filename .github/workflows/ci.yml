@@ -192,15 +192,21 @@ jobs:
           docker run -d --name kyqra-ci-http-worker --network kyqra-fixture -e ROLE=worker -e WORKER_KIND=http -e REDIS_HOST=kyqra-ci-redis -e DATABASE_URL=postgresql://crawler:fixture-only@kyqra-ci-postgres:5432/crawler kyqra-ci:${{ github.sha }}
           docker run -d --name kyqra-ci-browser-worker --network kyqra-fixture -e ROLE=worker -e WORKER_KIND=browser -e REDIS_HOST=kyqra-ci-redis -e DATABASE_URL=postgresql://crawler:fixture-only@kyqra-ci-postgres:5432/crawler kyqra-ci:${{ github.sha }}
           docker run -d --name kyqra-ci-callback-worker --network kyqra-fixture -e ROLE=callback -e REDIS_HOST=kyqra-ci-redis -e DATABASE_URL=postgresql://crawler:fixture-only@kyqra-ci-postgres:5432/crawler -e KYQRA_MIDDLEWARE_API_KEY=mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm -e KYQRA_WEBHOOK_SECRET=wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww kyqra-ci:${{ github.sha }}
-          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:3100/readyz && break; sleep 1; done
+          for i in $(seq 1 60); do docker exec kyqra-ci-api curl -fsS http://127.0.0.1:3001/readyz && break; sleep 1; done
           sleep 3
           test "$(docker inspect --format '{{.State.Running}}' kyqra-ci-http-worker)" = true
           test "$(docker inspect --format '{{.State.Running}}' kyqra-ci-browser-worker)" = true
           test "$(docker inspect --format '{{.State.Running}}' kyqra-ci-callback-worker)" = true
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/healthz)" = 200
-          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/readyz)" = 200
+          # Deep dependency probes must not answer an unauthenticated public caller.
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/readyz)" = 401
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/health)" = 401
+          test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/health/ready)" = 401
+          # The internal listener answers them, and is never published to the host.
+          test "$(docker exec kyqra-ci-api curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/readyz)" = 200
+          ! curl -sS --max-time 3 http://127.0.0.1:3001/readyz
           test "$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/api/v1/jobs)" = 401
-          printf 'HEALTHZ=200\nREADYZ=200\nUNAUTHENTICATED_JOB=401\nHTTP_WORKER=RUNNING\nBROWSER_WORKER=RUNNING\nCALLBACK_WORKER=RUNNING\nSCRAPER_JOBS_STARTED=0\n' > health-report.txt
+          printf 'HEALTHZ=200\nPUBLIC_READYZ=401\nPUBLIC_HEALTH=401\nINTERNAL_READYZ=200\nINTERNAL_PORT_UNPUBLISHED=1\nUNAUTHENTICATED_JOB=401\nHTTP_WORKER=RUNNING\nBROWSER_WORKER=RUNNING\nCALLBACK_WORKER=RUNNING\nSCRAPER_JOBS_STARTED=0\n' > health-report.txt
       - name: Build provenance
         run: |
           printf '{"_type":"https://in-toto.io/Statement/v1","subject":[{"name":"kyqra-ci","digest":{"sha256":"%s"}}],"predicateType":"https://slsa.dev/provenance/v1","predicate":{"buildDefinition":{"externalParameters":{"gitCommit":"%s"}},"runDetails":{"builder":{"id":"github-actions"}}}}\n' "$(sed 's/^sha256://' image-digest.txt)" "$GITHUB_SHA" > provenance.json
@@ -239,7 +245,10 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with: { name: kyqra-ci-reports }
       - run: grep -Fxq 'HEALTHZ=200' health-report.txt
-      - run: grep -Fxq 'READYZ=200' health-report.txt
+      - run: grep -Fxq 'PUBLIC_READYZ=401' health-report.txt
+      - run: grep -Fxq 'PUBLIC_HEALTH=401' health-report.txt
+      - run: grep -Fxq 'INTERNAL_READYZ=200' health-report.txt
+      - run: grep -Fxq 'INTERNAL_PORT_UNPUBLISHED=1' health-report.txt
       - run: grep -Fxq 'UNAUTHENTICATED_JOB=401' health-report.txt
       - run: grep -Fxq 'HTTP_WORKER=RUNNING' health-report.txt
       - run: grep -Fxq 'BROWSER_WORKER=RUNNING' health-report.txt

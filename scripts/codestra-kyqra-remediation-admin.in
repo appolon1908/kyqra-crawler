@@ -168,6 +168,10 @@ compose_app() {
   (cd "$APP" && KYQRA_IMAGE="$image" KYQRA_SERVICE_PRINCIPALS_FILE="$PRINCIPALS" KYQRA_SECRETS_GID="$(getent group "$PRINCIPALS_GROUP" | cut -d: -f3)" docker compose -p kyqra-crawler -f docker-compose.yml "$@")
 }
 
+internal_ready() {
+  docker exec "$(container_for_service api)"     curl -fsS --max-time 5 http://127.0.0.1:3001/readyz >/dev/null 2>&1
+}
+
 capture_running_services() {
   local destination=$1 service container state
   : >"$destination"
@@ -327,7 +331,8 @@ runtime_verify() {
   ! ss -ltnH | awk '{print $4}' | grep -Fxq '10.40.0.4:3100' || die PRIVATE_PLAINTEXT_STILL_OPEN
   ss -ltnH | awk '{print $4}' | grep -Fxq '10.40.0.4:18444' || die MTLS_18444_ABSENT
   curl -fsS --max-time 5 http://127.0.0.1:3100/healthz >/dev/null || die LOCAL_HEALTH_FAILED
-  curl -fsS --max-time 5 http://127.0.0.1:3100/readyz >/dev/null || die LOCAL_READY_FAILED
+  [ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3100/readyz)" = 401 ]     || die PUBLIC_DEEP_PROBE_EXPOSED
+  internal_ready || die LOCAL_READY_FAILED
   /usr/sbin/ufw status | grep -F '10.40.0.4 18444/tcp on enp5s0.4001' | grep -Fq '10.40.0.1' || die FIREWALL_ALLOWLIST_MISSING
   ! /usr/sbin/ufw status | grep -Fq '10.40.0.4 3100/tcp' || die OLD_FIREWALL_RULE_PRESENT
   /usr/sbin/nginx -t >/dev/null 2>&1 || die NGINX_RUNTIME_INVALID
@@ -365,7 +370,8 @@ do_rollback() {
   /usr/sbin/ufw --force delete allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 18444 proto tcp >/dev/null 2>&1 || true
   /usr/sbin/ufw allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 3100 proto tcp comment 'Middleware to Kyqra private API' >/dev/null
   start_recorded_services "$backup/running-services" "$image"
-  curl -fsS --max-time 10 http://127.0.0.1:3100/health >/dev/null
+  for _ in $(seq 1 30); do internal_ready && break; sleep 1; done
+  internal_ready
   record PASS
   printf 'ROLLBACK=PASS\n'
 }
@@ -399,7 +405,7 @@ case "$op" in
     compose_app "$EXPECTED_IMAGE" run --rm --no-deps migrate >/dev/null
     compose_app "$EXPECTED_IMAGE" up -d --no-deps --force-recreate "${APP_SERVICES[@]}" >/dev/null
     systemctl reload nginx
-    for _ in $(seq 1 30); do curl -fsS --max-time 3 http://127.0.0.1:3100/readyz >/dev/null 2>&1 && break; sleep 1; done
+    for _ in $(seq 1 30); do internal_ready && break; sleep 1; done
     /usr/sbin/ufw --force delete allow in on enp5s0.4001 from 10.40.0.1 to 10.40.0.4 port 3100 proto tcp >/dev/null
     runtime_verify
     trap - EXIT; record PASS; printf 'INSTALL=PASS\n'

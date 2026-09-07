@@ -75,6 +75,21 @@ export const databaseUrl = (): string => {
   return `postgresql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`;
 };
 
+export interface InternalListenerOptions {
+  host: string;
+  port: number;
+}
+
+/**
+ * Listener that carries the deep readiness probes. It defaults to the loopback
+ * interface so container health checks and orchestration can reach it while the
+ * public listener cannot expose dependency probes to the internet.
+ */
+export const internalListenerOptions = (): InternalListenerOptions => ({
+  host: process.env.INTERNAL_HEALTH_HOST || '127.0.0.1',
+  port: positiveInteger(process.env.INTERNAL_HEALTH_PORT, 3001),
+});
+
 export const httpConcurrency = (): number => positiveInteger(process.env.HTTP_CONCURRENCY, 15);
 
 export const browserConcurrency = (): number => positiveInteger(process.env.BROWSER_CONCURRENCY, 3);
