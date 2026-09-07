@@ -1,6 +1,12 @@
 import { Job, Worker } from 'bullmq';
 import { CheerioCrawler } from '@crawlee/cheerio';
-import { Configuration, NonRetryableError, type Request, type RequestOptions } from '@crawlee/core';
+import {
+  Configuration,
+  NonRetryableError,
+  type Request,
+  type RequestOptions,
+  type RequestProvider,
+} from '@crawlee/core';
 import { PlaywrightCrawler } from '@crawlee/playwright';
 
 import {
@@ -137,9 +143,11 @@ const processPage = async (
   html: string,
   progress: CrawlProgress,
   guardTarget: (rawUrl: string) => Promise<void>,
-  stopSignal: AbortSignal,
+  cancelSignal: AbortSignal,
 ): Promise<void> => {
-  if (stopSignal.aborted) throw new NonRetryableError('job_no_longer_running');
+  // A page already fetched is still stored during a shutdown; discarding it here would
+  // waste the request and make the resume fetch the same URL again.
+  if (cancelSignal.aborted) throw new NonRetryableError('job_no_longer_running');
   if ((await getInternalJobStatus(runtime.db, jobId)) !== 'running') {
     job.discard();
     throw new NonRetryableError('job_no_longer_running');
@@ -236,9 +244,10 @@ export const processCrawlJob = async (
       ? {}
       : { pollIntervalMs: options.cancelPollIntervalMs }),
   });
-  const stopSignal = options.shutdownSignal
-    ? AbortSignal.any([cancellation.signal, options.shutdownSignal])
-    : cancellation.signal;
+  // Only a cancellation aborts work already in flight. A shutdown stops the crawler from
+  // dispatching anything new (`crawler.stop()`), then lets the requests that were already
+  // issued finish and be recorded, so a resume neither refetches nor loses them.
+  const cancelSignal = cancellation.signal;
 
   // No local storage: the frontier lives in PostgreSQL and Crawlee keeps only its own
   // statistics, which stay in memory.
@@ -249,6 +258,10 @@ export const processCrawlJob = async (
     workerId,
     maxRequests: spec.maxPages,
   });
+  // Crawlee validates crawler options with an exact shape that omits `requestManager`.
+  // A bare `requestQueue` is accepted, and `initializeRequestManager` then uses it as the
+  // request manager directly, which is exactly the seam this frontier needs.
+  const frontierAsQueue = frontier as unknown as RequestProvider;
   let pinnedProxy: PinnedCrawlProxy | undefined;
   let crawler: CheerioCrawler | PlaywrightCrawler | undefined;
   const useBrowser = spec.browser === 'playwright';
@@ -323,7 +336,7 @@ export const processCrawlJob = async (
     );
 
     const guardNavigation = async (request: Request): Promise<void> => {
-      if (stopSignal.aborted) throw new NonRetryableError('job_no_longer_running');
+      if (cancelSignal.aborted) throw new NonRetryableError('job_no_longer_running');
       if ((await getInternalJobStatus(runtime.db, jobId)) !== 'running') {
         job.discard();
         throw new NonRetryableError('job_no_longer_running');
@@ -332,7 +345,7 @@ export const processCrawlJob = async (
       if (!robots.isAllowedCached(request.url)) {
         throw new NonRetryableError('robots_disallowed');
       }
-      await limiter.acquire(hostOf(request.url), stopSignal);
+      await limiter.acquire(hostOf(request.url), cancelSignal);
     };
 
     if (useBrowser) {
@@ -340,7 +353,7 @@ export const processCrawlJob = async (
       crawler = new PlaywrightCrawler(
         {
           ...commonOptions,
-          requestManager: frontier,
+          requestQueue: frontierAsQueue,
           preNavigationHooks: [
             async ({ request, page }) => {
               await guardNavigation(request);
@@ -350,7 +363,7 @@ export const processCrawlJob = async (
               // the browser-wide pinned proxy. This route is a second policy
               // check; continue() cannot bypass the proxy's validated address.
               await page.route('**/*', async (route) => {
-                if (stopSignal.aborted) return route.abort('blockedbyclient');
+                if (cancelSignal.aborted) return route.abort('blockedbyclient');
                 const target = route.request().url();
                 const protocol = new URL(target).protocol;
                 if (protocol === 'data:' || protocol === 'blob:' || protocol === 'about:') {
@@ -402,7 +415,7 @@ export const processCrawlJob = async (
               html,
               progress,
               guardTarget,
-              stopSignal,
+              cancelSignal,
             );
             if (depth < spec.maxDepth && spec.mode !== 'single') {
               await context.enqueueLinks({
@@ -420,7 +433,7 @@ export const processCrawlJob = async (
       crawler = new CheerioCrawler(
         {
           ...commonOptions,
-          requestManager: frontier,
+          requestQueue: frontierAsQueue,
           preNavigationHooks: [
             async ({ request }, gotOptions) => {
               await guardNavigation(request);
@@ -428,7 +441,7 @@ export const processCrawlJob = async (
               gotOptions.maxRedirects = 5;
               // Aborting the signal tears down an in-flight fetch instead of leaving it
               // to run to the request-handler timeout after a cancellation.
-              gotOptions.signal = stopSignal;
+              gotOptions.signal = cancelSignal;
               gotOptions.followRedirect = (response) => {
                 const location = response.headers.location;
                 if (!location) return false;
@@ -466,7 +479,7 @@ export const processCrawlJob = async (
               html,
               progress,
               guardTarget,
-              stopSignal,
+              cancelSignal,
             );
             if (depth < spec.maxDepth && spec.mode !== 'single') {
               await context.enqueueLinks({

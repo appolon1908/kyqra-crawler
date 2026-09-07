@@ -54,7 +54,7 @@ describe('durable frontier, cancellation, and resumable claims', () => {
       startUrls: [`${fixture.baseUrl}/chain/1`],
       mode: 'domain',
       maxPages: 40,
-      maxDepth: 40,
+      maxDepth: 10,
       browser: 'http',
       extract: [],
       includePatterns: [],
@@ -106,7 +106,10 @@ describe('durable frontier, cancellation, and resumable claims', () => {
       served.set(path, (served.get(path) ?? 0) + 1);
       const step = Number(request.params.step);
       await sleep(250);
-      const next = step < 30 ? `<a href="/chain/${step + 1}">next</a>` : '';
+      const next =
+        step < 40
+          ? [1, 2, 3].map((child) => `<a href="/chain/${step * 3 + child}">n</a>`).join('')
+          : '';
       response
         .type('html')
         .send(

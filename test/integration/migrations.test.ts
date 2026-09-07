@@ -204,7 +204,9 @@ describe('PostgreSQL migrations', () => {
     await db.query('delete from job_requests where job_id=$1', [automaticRetryJobId]);
     await db.query('delete from jobs where id=$1', [automaticRetryJobId]);
 
-    await migrateDatabase(databaseUrl, 'down', 2);
+    // Step back to the 0001 baseline, where jobs still has `payload`. This count tracks
+    // the number of migrations above that baseline.
+    await migrateDatabase(databaseUrl, 'down', 3);
     const legacyJobId = '00000000-0000-4000-8000-000000000002';
     await db.query("insert into jobs(id,status,payload) values($1,'queued',$2)", [
       legacyJobId,

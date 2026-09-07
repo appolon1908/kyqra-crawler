@@ -22,21 +22,21 @@ acceptance checklists on their own issues.
 
 ## Milestones
 
-| Milestone | Scope                                                     | Issues             | State       |
-| --------- | --------------------------------------------------------- | ------------------ | ----------- |
-| M0        | Baseline truth reconciliation, defect inventory, ledger   | —                  | Complete    |
-| M1        | Replace source-string tests; restructure the service      | —                  | Complete    |
-| M2        | Reversible PostgreSQL migrations replace boot-time DDL    | #25                | Complete    |
-| M3        | Crawl-target SSRF, robots.txt, and probe-surface controls | #9, #10, #30       | Complete    |
-| M4        | Durable frontier, real cancellation, graceful shutdown    | #15, #16, #17, #21 | This change |
-| M5        | Adaptive `browser=auto` escalation                        | #14                | Planned     |
-| M6        | Tenant-isolated authenticated crawling                    | #23                | Planned     |
-| M7        | Sitemap, pagination, and compliant search discovery       | #13, #22           | Planned     |
-| M8        | Extraction packs and real field-level provenance          | #12, #18, #24      | Planned     |
-| M9        | Delivery batching, dead-letter queue, and replay          | #19, #20           | Planned     |
-| M10       | Metrics, tracing, and a generated OpenAPI contract        | #26                | Planned     |
-| M11       | API rate limiting, mutation audit logs, dashboard hygiene | #11, #26, #27      | Planned     |
-| M12–M15   | Reserved for cutover, canary, and production activation   | —                  | Planned     |
+| Milestone | Scope                                                     | Issues             | State    |
+| --------- | --------------------------------------------------------- | ------------------ | -------- |
+| M0        | Baseline truth reconciliation, defect inventory, ledger   | —                  | Complete |
+| M1        | Replace source-string tests; restructure the service      | —                  | Complete |
+| M2        | Reversible PostgreSQL migrations replace boot-time DDL    | #25                | Complete |
+| M3        | Crawl-target SSRF, robots.txt, and probe-surface controls | #9, #10, #30       | Complete |
+| M4        | Durable frontier, real cancellation, graceful shutdown    | #15, #16, #17, #21 | Complete |
+| M5        | Adaptive `browser=auto` escalation                        | #14                | Planned  |
+| M6        | Tenant-isolated authenticated crawling                    | #23                | Planned  |
+| M7        | Sitemap, pagination, and compliant search discovery       | #13, #22           | Planned  |
+| M8        | Extraction packs and real field-level provenance          | #12, #18, #24      | Planned  |
+| M9        | Delivery batching, dead-letter queue, and replay          | #19, #20           | Planned  |
+| M10       | Metrics, tracing, and a generated OpenAPI contract        | #26                | Planned  |
+| M11       | API rate limiting, mutation audit logs, dashboard hygiene | #11, #26, #27      | Planned  |
+| M12–M15   | Reserved for cutover, canary, and production activation   | —                  | Planned  |
 
 ## M4 exit criteria
 
