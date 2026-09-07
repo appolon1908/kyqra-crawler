@@ -159,11 +159,18 @@ export const findIdempotentJob = async (
   callerId: string,
   idempotencyKey: string,
 ): Promise<IdempotentJob | null> => {
+  // Rows created before 0003 were backfilled with caller_id 'legacy', and the
+  // index this replaced was scoped to (tenant_id, idempotency_key). Matching
+  // those rows as well keeps a key replayed across the upgrade boundary
+  // idempotent instead of admitting a second job under the authenticated
+  // caller. The caller's own row still wins when both exist.
   const result = await db.query<IdempotentJob>(
     `select m.job_id,m.request_hash,m.correlation_id,m.enqueue_outcome,j.status,j.error
        from job_requests m join jobs j on j.id=m.job_id
-      where m.tenant_id=$1 and m.caller_id=$2 and m.action='crawl.job.create'
-        and m.api_version='api/v1' and m.resource='jobs' and m.idempotency_key=$3`,
+      where m.tenant_id=$1 and m.caller_id in ($2,'legacy') and m.action='crawl.job.create'
+        and m.api_version='api/v1' and m.resource='jobs' and m.idempotency_key=$3
+      order by case when m.caller_id=$2 then 0 else 1 end
+      limit 1`,
     [tenantId, callerId, idempotencyKey],
   );
   return result.rows[0] ?? null;

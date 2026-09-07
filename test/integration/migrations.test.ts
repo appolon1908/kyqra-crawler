@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { buildApi } from '../../src/api/app.js';
 import { migrateDatabase } from '../../src/storage/postgres/migrate.js';
-import { markJobRunning } from '../../src/storage/postgres/repository.js';
+import { findIdempotentJob, markJobRunning } from '../../src/storage/postgres/repository.js';
 import type { Runtime } from '../../src/types.js';
 
 const POSTGRES_IMAGE =
@@ -226,5 +226,54 @@ describe('PostgreSQL migrations', () => {
       tenant_id: 'legacy-tenant',
     });
     expect(await applicationTables()).toEqual(targetTables);
+  });
+
+  it('keeps idempotency keys stable across the caller_id backfill', async () => {
+    const legacyBackfilledJob = '00000000-0000-4000-8000-000000000020';
+    const callerScopedJob = '00000000-0000-4000-8000-000000000021';
+    const tenantId = 'backfill-tenant';
+    const idempotencyKey = 'pre-migration-key';
+
+    await db.query(
+      "insert into jobs(id,tenant_id,status,spec,budget) values($1,$2,'queued',$3,$4)",
+      [legacyBackfilledJob, tenantId, { startUrls: ['https://fixture.test'] }, {}],
+    );
+    await db.query(
+      `insert into job_requests(
+         job_id,idempotency_key,request_hash,correlation_id,tenant_id,caller_id
+       ) values($1,$2,'backfill-hash','backfill-correlation',$3,'legacy')`,
+      [legacyBackfilledJob, idempotencyKey, tenantId],
+    );
+
+    // A caller authenticating after the upgrade must still match the row the
+    // backfill assigned to 'legacy', or the replay enqueues a duplicate crawl.
+    const replayed = await findIdempotentJob(db, tenantId, 'authenticated-caller', idempotencyKey);
+    expect(replayed?.job_id).toBe(legacyBackfilledJob);
+    expect(replayed?.request_hash).toBe('backfill-hash');
+
+    await db.query(
+      "insert into jobs(id,tenant_id,status,spec,budget) values($1,$2,'queued',$3,$4)",
+      [callerScopedJob, tenantId, { startUrls: ['https://fixture.test'] }, {}],
+    );
+    await db.query(
+      `insert into job_requests(
+         job_id,idempotency_key,request_hash,correlation_id,tenant_id,caller_id
+       ) values($1,$2,'caller-hash','caller-correlation',$3,'authenticated-caller')`,
+      [callerScopedJob, idempotencyKey, tenantId],
+    );
+    expect(
+      (await findIdempotentJob(db, tenantId, 'authenticated-caller', idempotencyKey))?.job_id,
+    ).toBe(callerScopedJob);
+
+    expect(
+      await findIdempotentJob(db, 'other-tenant', 'authenticated-caller', idempotencyKey),
+    ).toBeNull();
+
+    await db.query('delete from job_requests where job_id=any($1::uuid[])', [
+      [legacyBackfilledJob, callerScopedJob],
+    ]);
+    await db.query('delete from jobs where id=any($1::uuid[])', [
+      [legacyBackfilledJob, callerScopedJob],
+    ]);
   });
 });
