@@ -1,6 +1,12 @@
 import { Job, Worker } from 'bullmq';
 import { CheerioCrawler } from '@crawlee/cheerio';
-import { Configuration, NonRetryableError, type Request, type RequestOptions } from '@crawlee/core';
+import {
+  Configuration,
+  NonRetryableError,
+  type Request,
+  type RequestOptions,
+  type RequestProvider,
+} from '@crawlee/core';
 import { PlaywrightCrawler } from '@crawlee/playwright';
 
 import {
@@ -249,6 +255,10 @@ export const processCrawlJob = async (
     workerId,
     maxRequests: spec.maxPages,
   });
+  // Crawlee validates crawler options with an exact shape that omits `requestManager`.
+  // A bare `requestQueue` is accepted, and `initializeRequestManager` then uses it as the
+  // request manager directly, which is exactly the seam this frontier needs.
+  const frontierAsQueue = frontier as unknown as RequestProvider;
   let pinnedProxy: PinnedCrawlProxy | undefined;
   let crawler: CheerioCrawler | PlaywrightCrawler | undefined;
   const useBrowser = spec.browser === 'playwright';
@@ -340,7 +350,7 @@ export const processCrawlJob = async (
       crawler = new PlaywrightCrawler(
         {
           ...commonOptions,
-          requestManager: frontier,
+          requestQueue: frontierAsQueue,
           preNavigationHooks: [
             async ({ request, page }) => {
               await guardNavigation(request);
@@ -420,7 +430,7 @@ export const processCrawlJob = async (
       crawler = new CheerioCrawler(
         {
           ...commonOptions,
-          requestManager: frontier,
+          requestQueue: frontierAsQueue,
           preNavigationHooks: [
             async ({ request }, gotOptions) => {
               await guardNavigation(request);

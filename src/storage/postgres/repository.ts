@@ -70,10 +70,9 @@ export const getInternalJobState = async (
   db: Pool,
   jobId: string,
 ): Promise<InternalJobState | null> => {
-  const result = await db.query<InternalJobState>(
-    'select status,progress from jobs where id=$1',
-    [jobId],
-  );
+  const result = await db.query<InternalJobState>('select status,progress from jobs where id=$1', [
+    jobId,
+  ]);
   return result.rows[0] ?? null;
 };
 
@@ -416,13 +415,7 @@ export const beginCommand = async (
        from command_requests
       where tenant_id=$1 and caller_id=$2 and action=$3 and api_version='api/v1'
         and resource=$4 and idempotency_key=$5`,
-    [
-      values.tenantId,
-      values.callerId,
-      values.action,
-      values.resource,
-      values.idempotencyKey,
-    ],
+    [values.tenantId, values.callerId, values.action, values.resource, values.idempotencyKey],
   );
   const existing = prior.rows[0];
   if (!existing) throw new Error('idempotency_readback_failed');
