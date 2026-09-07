@@ -14,6 +14,9 @@ x-app: &app
   networks: [backend]
   restart: unless-stopped
   init: true
+  # SIGTERM starts the graceful stop: workers stop claiming, let in-flight work settle,
+  # and release their frontier claims. Allow more than SHUTDOWN_GRACE_SECONDS for that.
+  stop_grace_period: 30s
   user: pwuser
   read_only: true
   cap_drop: [ALL]

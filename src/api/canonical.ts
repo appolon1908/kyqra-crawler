@@ -14,6 +14,7 @@ import {
   type JobStatusRow,
 } from '../storage/postgres/repository.js';
 import { crawlQueueForSpec, findCrawlJob, removeCrawlJob } from '../queues/crawl.js';
+import { publishJobCancellation } from '../workers/cancellation.js';
 import {
   queueCompletionCallbacks,
   storedCompletionProgress,
@@ -131,6 +132,9 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
         );
         if (cancelled) {
           await removeCrawlJob(runtime, request.params.id).catch(() => undefined);
+          // Reach a crawl that is already running: the queue entry is gone, but a worker
+          // holding the job only stops fetching once it sees the cancellation.
+          await publishJobCancellation(runtime, request.params.id).catch(() => undefined);
         }
         return cancelled
           ? {
