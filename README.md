@@ -112,6 +112,34 @@ are recorded; sitemap-driven discovery is M7.
 `browser=auto` currently routes to the HTTP worker; request `browser=playwright` explicitly when a
 rendered browser is required.
 
+## Frontier, pacing, and lifecycle
+
+The crawl frontier is the `frontier` table in PostgreSQL, not a directory on one worker.
+Crawlee is driven through a request manager backed by that table, so nothing is written to
+a worker filesystem. A worker claims rows with `for update skip locked`, recording its
+identity and the time, which lets replicas take disjoint work from the same frontier. A URL
+discovered twice is stored once, work already handled is never reissued, and the frontier is
+deleted when its job reaches a terminal state.
+
+A claim that goes quiet for `FRONTIER_VISIBILITY_SECONDS` returns to the pending pool, swept
+every `FRONTIER_SWEEP_SECONDS`, so a replica killed outright cannot strand a job.
+
+Cancelling a job reaches a worker that is already running it: the API publishes on Redis and
+every worker also polls the job row, so fetching stops within seconds rather than at the next
+request boundary. In-flight fetches and rate-limiter waits are aborted, and a cancelled job is
+never later recorded as failed or completed.
+
+SIGTERM starts an ordered shutdown — stop claiming, let in-flight work settle, release this
+worker's claims, close connections — bounded by `SHUTDOWN_GRACE_SECONDS`. An interrupted job
+is not marked failed; it keeps its frontier and resumes on the next attempt without losing or
+repeating work.
+
+Per-host pacing is a Redis token bucket, so replicas share one budget for a host instead of
+each applying its own delay. The rate is the most restrictive of the job's `requestsPerSecond`,
+the robots.txt `Crawl-delay`, and the host's `domains` row. `Retry-After` on 429 and 503 is
+honored, repeated failures reduce the rate adaptively down to a floor and recover on success,
+and a host that keeps failing has its circuit opened for a cooling-off window.
+
 ## Secrets and configuration
 
 Production secret values do not belong in Git or Compose environment variables. Compose mounts

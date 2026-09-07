@@ -445,3 +445,27 @@ export const completeCommand = async (
   );
   if ((result.rowCount ?? 0) !== 1) throw new Error('command_completion_conflict');
 };
+
+export interface DomainPolicy {
+  host: string;
+  crawlDelayMs: number | null;
+  maxRps: number | null;
+}
+
+/**
+ * Operator-approved crawl policy for hosts, from the `domains` table. These bound the
+ * per-host rate limiter alongside anything robots.txt declares.
+ */
+export const getDomainPolicies = async (db: Pool, hosts: string[]): Promise<DomainPolicy[]> => {
+  if (hosts.length === 0) return [];
+  const policies = await db.query<{
+    host: string;
+    crawl_delay_ms: number | null;
+    max_rps: string | null;
+  }>('select host,crawl_delay_ms,max_rps from domains where host = any($1::text[])', [hosts]);
+  return policies.rows.map((row) => ({
+    host: row.host,
+    crawlDelayMs: row.crawl_delay_ms,
+    maxRps: row.max_rps === null ? null : Number(row.max_rps),
+  }));
+};

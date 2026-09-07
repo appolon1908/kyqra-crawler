@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 
 export interface RedisConnectionOptions {
   host: string;
@@ -89,6 +90,29 @@ export const internalListenerOptions = (): InternalListenerOptions => ({
   host: process.env.INTERNAL_HEALTH_HOST || '127.0.0.1',
   port: positiveInteger(process.env.INTERNAL_HEALTH_PORT, 3001),
 });
+
+/**
+ * Stable identity for this worker process. Frontier claims are recorded against it so a
+ * graceful shutdown can release exactly the claims this process holds, and so an
+ * abandoned claim is attributable.
+ */
+export const workerIdentity = (): string =>
+  `${process.env.KYQRA_WORKER_ID || os.hostname()}:${process.pid}`;
+
+/**
+ * How long a frontier claim stays valid without progress. A worker killed without running
+ * its shutdown path has its claims recovered after this window.
+ */
+export const frontierVisibilitySeconds = (): number =>
+  positiveInteger(process.env.FRONTIER_VISIBILITY_SECONDS, 120);
+
+/** How often a worker returns expired claims to the pending pool. */
+export const frontierSweepSeconds = (): number =>
+  positiveInteger(process.env.FRONTIER_SWEEP_SECONDS, 30);
+
+/** Seconds a shutdown may take before the process exits regardless. */
+export const shutdownGraceSeconds = (): number =>
+  positiveInteger(process.env.SHUTDOWN_GRACE_SECONDS, 25);
 
 export const httpConcurrency = (): number => positiveInteger(process.env.HTTP_CONCURRENCY, 15);
 

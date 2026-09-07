@@ -6,6 +6,7 @@ import { request, type Dispatcher } from 'undici';
 import { integrationCredentials } from '../config/env.js';
 import { callbackSignatureInput, createPinnedCallbackAgent } from '../delivery/security.js';
 import type { CallbackJobData, Runtime } from '../types.js';
+import { createShutdownCoordinator, type ShutdownCoordinator } from './shutdown.js';
 
 interface CallbackCredentials {
   middlewareApiKey: string;
@@ -61,9 +62,12 @@ export const deliverCallback = async (
   }
 };
 
-export const createCallbackWorker = (runtime: Runtime): Worker<CallbackJobData> => {
+export const createCallbackWorker = (
+  runtime: Runtime,
+  shutdown?: ShutdownCoordinator,
+): Worker<CallbackJobData> => {
   const credentials = integrationCredentials();
-  return new Worker<CallbackJobData>(
+  const worker = new Worker<CallbackJobData>(
     'callbacks',
     async (job) => {
       const eventId = String(job.id || crypto.randomUUID());
@@ -71,4 +75,13 @@ export const createCallbackWorker = (runtime: Runtime): Worker<CallbackJobData> 
     },
     { connection: runtime.redisConnection, concurrency: 3 },
   );
+  // `close()` stops new claims and waits for in-flight deliveries, so a redeploy neither
+  // drops a callback nor delivers one twice.
+  (shutdown ?? createShutdownCoordinator({ signals: [] })).onShutdown(
+    'stop-callback-worker',
+    async () => {
+      await worker.close();
+    },
+  );
+  return worker;
 };

@@ -6,6 +6,7 @@ import { browserConcurrency, httpConcurrency } from '../config/env.js';
 import { jobSpecSchema } from '../config/schema.js';
 import { isCallbackAllowed, validateCrawlTarget } from '../delivery/security.js';
 import { crawlQueueForSpec, removeCrawlJob } from '../queues/crawl.js';
+import { publishJobCancellation } from '../workers/cancellation.js';
 import {
   cancelJob,
   createJob,
@@ -253,6 +254,9 @@ export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
         );
         if (cancelled) {
           await removeCrawlJob(runtime, request.params.id).catch(() => undefined);
+          // Reach a crawl that is already running: the queue entry is gone, but a worker
+          // holding the job only stops fetching once it sees the cancellation.
+          await publishJobCancellation(runtime, request.params.id).catch(() => undefined);
         }
         return cancelled
           ? { code: 200, body: { id: request.params.id, status: 'cancelled' } }

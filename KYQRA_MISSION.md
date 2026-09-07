@@ -27,8 +27,8 @@ acceptance checklists on their own issues.
 | M0        | Baseline truth reconciliation, defect inventory, ledger   | —                  | Complete    |
 | M1        | Replace source-string tests; restructure the service      | —                  | Complete    |
 | M2        | Reversible PostgreSQL migrations replace boot-time DDL    | #25                | Complete    |
-| M3        | Crawl-target SSRF, robots.txt, and probe-surface controls | #9, #10, #30       | This change |
-| M4        | Durable frontier, real cancellation, graceful shutdown    | #15, #16, #17, #21 | Planned     |
+| M3        | Crawl-target SSRF, robots.txt, and probe-surface controls | #9, #10, #30       | Complete    |
+| M4        | Durable frontier, real cancellation, graceful shutdown    | #15, #16, #17, #21 | This change |
 | M5        | Adaptive `browser=auto` escalation                        | #14                | Planned     |
 | M6        | Tenant-isolated authenticated crawling                    | #23                | Planned     |
 | M7        | Sitemap, pagination, and compliant search discovery       | #13, #22           | Planned     |
@@ -37,6 +37,61 @@ acceptance checklists on their own issues.
 | M10       | Metrics, tracing, and a generated OpenAPI contract        | #26                | Planned     |
 | M11       | API rate limiting, mutation audit logs, dashboard hygiene | #11, #26, #27      | Planned     |
 | M12–M15   | Reserved for cutover, canary, and production activation   | —                  | Planned     |
+
+## M4 exit criteria
+
+M4 replaces the parts of the crawl loop that assumed a single, never-replaced worker: a
+frontier on local disk, cancellation that only took effect between requests, no shutdown
+path, and pacing that each replica applied on its own.
+
+### Durable frontier (#17)
+
+1. The crawl frontier is the `frontier` table in PostgreSQL. Crawlee is driven through a
+   request manager backed by it, and no request queue is written to a worker filesystem.
+2. Claims are rows with an owner and a timestamp, taken with `for update skip locked`, so
+   replicas claim disjoint work from one frontier without blocking each other.
+3. A URL discovered twice is stored once, and work already handled is never handed out
+   again, including across a restart.
+4. A claim whose visibility timeout expires returns to the pending pool automatically, so
+   a killed replica does not strand a job.
+5. The frontier is deleted when its job reaches a terminal state, and cascades with the
+   job, so the table does not grow without bound.
+6. The job page budget is enforced against the shared frontier, not only per crawler
+   instance.
+
+### Cancellation (#15)
+
+7. Cancelling a job reaches a worker that is already running it, over Redis and confirmed
+   by a database poll, and all fetching stops within five seconds.
+8. The cancellation aborts in-flight fetches and rate-limiter waits rather than waiting
+   for the request handler timeout.
+9. A cancelled job stays cancelled: it is not subsequently recorded as failed or
+   completed, and no further results are written.
+
+### Graceful shutdown and resumable claims (#16)
+
+10. SIGTERM and SIGINT start an ordered shutdown: stop claiming, let in-flight work
+    settle, release this worker's frontier claims, then close connections, bounded by a
+    grace period after which the process exits regardless.
+11. An interrupted job is not marked failed; it keeps its frontier and resumes on the
+    next attempt, on this replica or another.
+12. Resumption loses no work and duplicates no fetch.
+
+### Shared per-host rate limits (#21)
+
+13. Pacing is a Redis token bucket keyed by host, so every replica draws from one budget
+    instead of applying a per-crawler delay.
+14. The bucket rate is the most restrictive of the job's requested rate, the robots.txt
+    `Crawl-delay`, and the operator-approved `domains` row.
+15. `Retry-After` on 429 and 503 is honored before the next request to that host.
+16. Repeated failures reduce the host's rate adaptively, down to a floor, and recover on
+    success; a host that keeps failing has its circuit opened for a cooling-off window.
+
+### Evidence
+
+17. All CI jobs pass on a fresh checkout at the proving commit.
+18. `docs/ACCEPTANCE.md` gains an M4 row linking the proving commit and CI run, and
+    states what M4 does not claim.
 
 ## M3 exit criteria
 

@@ -5,4 +5,6 @@ coverage/
 data/
 logs/
 backups/*.sql.gz
-storage/
+# Crawlee's default local storage at the repository root. Anchored: an unanchored
+# rule also matches src/storage/, which silently excluded new source files there.
+/storage/
