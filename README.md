@@ -26,13 +26,17 @@ the service-principal registry: only lowercase SHA-256 digests are accepted and 
 constant-time. A principal has exactly one tenant and client identity. If supplied, `X-Tenant-Id`
 must match that identity. Operational routes additionally require the `operations` role.
 
-Public routes are limited to the dashboard and health/contract discovery:
+Public routes are limited to the dashboard, shallow liveness, and contract discovery:
 
 - `GET /`
-- `GET /health`, `/healthz`, `/readyz`
-- `GET /health/live`, `/health/ready`
-- `GET /api/v1/health`
+- `GET /healthz`, `/health/live`, `/api/v1/health`
 - `GET /openapi.json`
+
+`GET /health`, `GET /readyz`, and `GET /health/ready` run Redis and PostgreSQL probes.
+On the public listener they require a bearer token; the Nginx public policy returns 404
+for all three. They are also served without authentication on an internal listener
+(`INTERNAL_HEALTH_HOST`/`INTERNAL_HEALTH_PORT`, default `127.0.0.1:3001`) that compose
+never publishes, which is what container health checks and the installer use.
 
 Canonical authenticated routes:
 
@@ -85,6 +89,24 @@ Before enqueueing and before every navigation, Kyqra enforces:
 - redirect destination revalidation
 - Playwright subresource interception
 - maximum pages, depth, request rate, body size, and request timeouts
+
+### robots.txt
+
+`robots.txt` is fetched for every seed origin through the same pinned-address policy as
+crawl targets, before the frontier is populated, and cached per origin
+(`ROBOTS_CACHE_TTL_SECONDS`, default one hour). `Allow`, `Disallow`, `Crawl-delay`, and
+`Sitemap` are parsed with most-specific-rule precedence, `Allow` breaking ties, `*` and
+`$` patterns, and per-user-agent group selection (`ROBOTS_USER_AGENT`, default
+`KyqraCrawler`).
+
+No disallowed URL is enqueued, as a seed or as a discovered link, and the decision is
+rechecked before each navigation. A job whose every seed is disallowed fails with
+`robots_disallowed_all_seeds` instead of reporting an empty successful crawl. A declared
+`Crawl-delay` raises the per-host delay when it exceeds the job's configured rate, capped
+by `ROBOTS_MAX_CRAWL_DELAY_SECONDS` (default 30) so a hostile host cannot stall a worker.
+Following RFC 9309, an origin whose `robots.txt` is unreachable (5xx or transport
+failure) is not crawled, while a 4xx is treated as "no restrictions". Declared sitemaps
+are recorded; sitemap-driven discovery is M7.
 
 `KYQRA_ALLOW_TEST_TARGETS=true` exists only for isolated tests and must never be present in production.
 `browser=auto` currently routes to the HTTP worker; request `browser=playwright` explicitly when a
