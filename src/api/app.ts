@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 
-import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from 'fastify';
 
 import { browserConcurrency, httpConcurrency } from '../config/env.js';
 import { jobSpecSchema } from '../config/schema.js';
 import { isCallbackAllowed, validateCrawlTarget } from '../delivery/security.js';
+import { log } from '../observability/logger.js';
 import { crawlQueueForSpec, removeCrawlJob } from '../queues/crawl.js';
 import { publishJobCancellation } from '../workers/cancellation.js';
 import {
@@ -115,6 +116,20 @@ const isUniqueViolation = (error: unknown): boolean =>
 
 export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
   const app = Fastify({ bodyLimit: 2_000_000 });
+  // Fastify answers an unhandled rejection with a bare 500. Record what actually failed,
+  // without echoing the message to the caller.
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const declared = typeof error.statusCode === 'number' ? error.statusCode : 500;
+    const status = declared >= 400 && declared < 500 ? declared : 500;
+    if (status >= 500) {
+      log('error', 'request_unhandled_error', {
+        method: request.method,
+        route: request.routeOptions.url ?? request.url,
+        error: error.message,
+      });
+    }
+    return reply.code(status).send({ error: status >= 500 ? 'internal_error' : error.message });
+  });
   const ready = async (): Promise<ReadinessResult> => deepReadiness(runtime);
 
   app.get('/health', ready);
@@ -296,7 +311,7 @@ export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
           return { code: 409, body: { id: request.params.id, error: 'job_state_changed' } };
         }
         try {
-          await removeCrawlJob(runtime, request.params.id);
+          await removeCrawlJob(runtime, request.params.id, { waitMs: 5_000 });
           await crawlQueueForSpec(runtime, payload).add('crawl', payload, {
             jobId: request.params.id,
           });
