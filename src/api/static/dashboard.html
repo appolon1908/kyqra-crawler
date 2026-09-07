@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Kyqra Crawler</title>
+    <style>
+      __KYQRA_STYLE__
+    </style>
+  </head>
+  <body>
+    <h1>Kyqra Crawler</h1>
+    <input id="k" type="password" placeholder="API key" />
+    <textarea id="u" placeholder="URLs, one per line"></textarea>
+    <select id="m">
+      <option>single</option>
+      <option>domain</option>
+      <option>list</option>
+      <option>discovery</option>
+    </select>
+    <input id="p" type="number" value="100" />
+    <input id="d" type="number" value="3" />
+    <select id="b">
+      <option>auto</option>
+      <option>http</option>
+      <option>playwright</option>
+    </select>
+    <button onclick="go()">Start crawl</button>
+    <input id="j" placeholder="Job ID" />
+    <button onclick="st()">Status/results</button>
+    <button onclick="cn()">Cancel</button>
+    <pre id="o"></pre>
+    <script>
+      __KYQRA_SCRIPT__;
+    </script>
+  </body>
+</html>

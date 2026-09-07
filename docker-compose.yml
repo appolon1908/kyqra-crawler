@@ -4,25 +4,50 @@ x-app: &app
   env_file: '${KYQRA_ENV_FILE:-.env}'
   environment:
     REDIS_HOST: redis
-    DATABASE_URL: postgresql://crawler:${POSTGRES_PASSWORD}@postgres:5432/crawler
+    REDIS_PASSWORD_FILE: /run/secrets/kyqra_redis_password
+    DATABASE_HOST: postgres
+    DATABASE_USER: crawler
+    DATABASE_NAME: crawler
+    DATABASE_PASSWORD_FILE: /run/secrets/kyqra_postgres_password
+  secrets: [kyqra_redis_password, kyqra_postgres_password]
+  group_add: ['${KYQRA_SECRETS_GID:?set the host kyqra-secrets group id}']
   networks: [backend]
   restart: unless-stopped
   init: true
+  user: pwuser
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=1001,gid=1001,mode=0700
+    - /app/storage:rw,noexec,nosuid,nodev,size=512m,uid=1001,gid=1001,mode=0700
 services:
+  migrate:
+    <<: *app
+    command: ['node', 'dist/storage/postgres/migrate.js', 'up']
+    restart: 'no'
+    depends_on:
+      postgres: { condition: service_healthy }
+    mem_limit: 256m
+    cpus: 1
   api:
     <<: *app
     environment:
       REDIS_HOST: redis
-      DATABASE_URL: postgresql://crawler:${POSTGRES_PASSWORD}@postgres:5432/crawler
+      REDIS_PASSWORD_FILE: /run/secrets/kyqra_redis_password
+      DATABASE_HOST: postgres
+      DATABASE_USER: crawler
+      DATABASE_NAME: crawler
+      DATABASE_PASSWORD_FILE: /run/secrets/kyqra_postgres_password
       ROLE: api
       KYQRA_SERVICE_PRINCIPALS_FILE: /run/secrets/kyqra_service_principals
-    secrets: [kyqra_service_principals]
-    group_add: ['${KYQRA_SECRETS_GID:?set the host kyqra-secrets group id}']
+    secrets: [kyqra_service_principals, kyqra_redis_password, kyqra_postgres_password]
     ports: ['127.0.0.1:3100:3000']
     networks: [backend, frontend]
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
     mem_limit: 1g
     cpus: 2
     healthcheck:
@@ -38,12 +63,18 @@ services:
     environment:
       {
         REDIS_HOST: redis,
-        DATABASE_URL: 'postgresql://crawler:${POSTGRES_PASSWORD}@postgres:5432/crawler',
+        REDIS_PASSWORD_FILE: /run/secrets/kyqra_redis_password,
+        DATABASE_HOST: postgres,
+        DATABASE_USER: crawler,
+        DATABASE_NAME: crawler,
+        DATABASE_PASSWORD_FILE: /run/secrets/kyqra_postgres_password,
         ROLE: worker,
+        WORKER_KIND: http,
         HTTP_CONCURRENCY: 15,
         BROWSER_CONCURRENCY: 3,
         JOB_CONCURRENCY: 2,
       }
+    secrets: [kyqra_redis_password, kyqra_postgres_password]
     depends_on: [api]
     mem_limit: 4g
     cpus: 6
@@ -53,12 +84,18 @@ services:
     environment:
       {
         REDIS_HOST: redis,
-        DATABASE_URL: 'postgresql://crawler:${POSTGRES_PASSWORD}@postgres:5432/crawler',
+        REDIS_PASSWORD_FILE: /run/secrets/kyqra_redis_password,
+        DATABASE_HOST: postgres,
+        DATABASE_USER: crawler,
+        DATABASE_NAME: crawler,
+        DATABASE_PASSWORD_FILE: /run/secrets/kyqra_postgres_password,
         ROLE: worker,
+        WORKER_KIND: browser,
         HTTP_CONCURRENCY: 10,
         BROWSER_CONCURRENCY: 3,
         JOB_CONCURRENCY: 1,
       }
+    secrets: [kyqra_redis_password, kyqra_postgres_password]
     depends_on: [api]
     shm_size: 1gb
     mem_limit: 8g
@@ -69,36 +106,64 @@ services:
     environment:
       {
         REDIS_HOST: redis,
-        DATABASE_URL: 'postgresql://crawler:${POSTGRES_PASSWORD}@postgres:5432/crawler',
+        REDIS_PASSWORD_FILE: /run/secrets/kyqra_redis_password,
+        DATABASE_HOST: postgres,
+        DATABASE_USER: crawler,
+        DATABASE_NAME: crawler,
+        DATABASE_PASSWORD_FILE: /run/secrets/kyqra_postgres_password,
         ROLE: callback,
+        KYQRA_MIDDLEWARE_API_KEY_FILE: /run/secrets/kyqra_middleware_api_key,
+        KYQRA_WEBHOOK_SECRET_FILE: /run/secrets/kyqra_webhook_secret,
       }
+    secrets:
+      [
+        kyqra_redis_password,
+        kyqra_postgres_password,
+        kyqra_middleware_api_key,
+        kyqra_webhook_secret,
+      ]
     depends_on: [api]
     mem_limit: 512m
     cpus: 1
   redis:
     image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
-    command:
-      [
-        'redis-server',
-        '--appendonly',
-        'yes',
-        '--maxmemory',
-        '2gb',
-        '--maxmemory-policy',
-        'noeviction',
-      ]
-    volumes: ['redis:/data']
+    user: '999:1000'
+    command: ['/opt/kyqra/redis-start.sh']
+    secrets: [kyqra_redis_password]
+    volumes:
+      - redis:/data
+      - ./scripts/redis-start.sh:/opt/kyqra/redis-start.sh:ro
     networks: [backend]
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ['/tmp:rw,noexec,nosuid,nodev,size=8m,uid=999,gid=1000,mode=0700']
     mem_limit: 3g
-    healthcheck: { test: ['CMD', 'redis-cli', 'ping'], interval: 10s, timeout: 3s, retries: 5 }
+    healthcheck:
+      {
+        test:
+          [
+            'CMD-SHELL',
+            'REDISCLI_AUTH="$$(cat /run/secrets/kyqra_redis_password)" redis-cli --no-auth-warning ping',
+          ],
+        interval: 10s,
+        timeout: 3s,
+        retries: 5,
+      }
   postgres:
     image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
-      { POSTGRES_USER: crawler, POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}', POSTGRES_DB: crawler }
+      {
+        POSTGRES_USER: crawler,
+        POSTGRES_PASSWORD_FILE: /run/secrets/kyqra_postgres_password,
+        POSTGRES_DB: crawler,
+      }
+    secrets: [kyqra_postgres_password]
     volumes: ['postgres:/var/lib/postgresql/data']
     networks: [backend]
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
     mem_limit: 2g
     healthcheck:
       { test: ['CMD-SHELL', 'pg_isready -U crawler'], interval: 10s, timeout: 3s, retries: 5 }
@@ -111,3 +176,11 @@ volumes:
 secrets:
   kyqra_service_principals:
     file: '${KYQRA_SERVICE_PRINCIPALS_FILE:?set the root-owned service principal registry path}'
+  kyqra_redis_password:
+    file: '${KYQRA_REDIS_PASSWORD_FILE:?set the root-owned Redis password path}'
+  kyqra_postgres_password:
+    file: '${KYQRA_POSTGRES_PASSWORD_FILE:?set the root-owned PostgreSQL password path}'
+  kyqra_middleware_api_key:
+    file: '${KYQRA_MIDDLEWARE_API_KEY_FILE:?set the root-owned middleware API key path}'
+  kyqra_webhook_secret:
+    file: '${KYQRA_WEBHOOK_SECRET_FILE:?set the root-owned webhook HMAC secret path}'
