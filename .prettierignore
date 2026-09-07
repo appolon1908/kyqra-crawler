@@ -1,5 +1,8 @@
 node_modules
 dist
+coverage
 release
 evidence
 package-lock.json
+migrations/*.sql
+test/contracts/openapi-3.1-schema-2025-09-15.json

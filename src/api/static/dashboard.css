@@ -1,0 +1,28 @@
+body {
+  max-width: 850px;
+  margin: 40px auto;
+  color: #eee;
+  font: 16px system-ui;
+  background: #101827;
+}
+
+input,
+select,
+button,
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 5px;
+  padding: 10px;
+}
+
+button {
+  border: 0;
+  background: #22c55e;
+}
+
+pre {
+  overflow: auto;
+  padding: 15px;
+  background: #111;
+}

@@ -6,9 +6,9 @@ export default [
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'test/**/*.ts', 'vitest.config.ts'],
     rules: {
-      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       'no-empty': ['error', { allowEmptyCatch: true }],
       'prefer-const': 'off',
@@ -16,7 +16,7 @@ export default [
     },
   },
   {
-    files: ['test/**/*.mjs', 'scripts/**/*.mjs'],
+    files: ['test/**/*.mjs', 'scripts/**/*.mjs', 'src/api/static/**/*.js'],
     languageOptions: {
       globals: { console: 'readonly', process: 'readonly', Buffer: 'readonly', URL: 'readonly' },
     },
