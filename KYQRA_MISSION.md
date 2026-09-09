@@ -38,6 +38,38 @@ acceptance checklists on their own issues.
 | M11       | API rate limiting, mutation audit logs, dashboard hygiene | #11, #26, #27      | Planned  |
 | M12–M15   | Reserved for cutover, canary, and production activation   | —                  | Planned  |
 
+## M5 exit criteria
+
+`browser=auto` resolved to the HTTP crawler and never rendered, so a JavaScript-built page
+completed successfully with empty extraction — a silent wrong answer rather than a visible
+failure.
+
+1. A page fetched over HTTP is judged render-dependent from what it actually returned: an
+   empty framework mount point, a `<noscript>` prompt with no extracted content, or a
+   script-dominated shell carrying almost no text.
+2. A page that delivered its content is left on the HTTP fetcher. A thin page with no
+   script, and a mount point the server already filled, are not escalations.
+3. An escalated job is handed to the browser worker, which is the container provisioned
+   with the shared memory a browser needs. The HTTP worker never launches one.
+4. Escalation reuses the M4 durable frontier: rows judged render-dependent are reopened and
+   marked as owing a rendered fetch, everything already handled stays handled, and the
+   browser pass resumes from the same frontier.
+5. An escalation is not a failure. The job stays runnable, keeps its frontier, and is not
+   recorded as failed.
+6. Every result records which fetcher produced it, and a rendered result supersedes the
+   HTTP one for the same URL. The reverse never happens.
+7. The deciding signal is persisted as evidence, so an escalation is answerable after the
+   fact rather than a black box.
+8. `GET /api/v1/jobs/{id}/results` reports the fetcher per row and a per-fetcher summary,
+   and the CSV export carries the same column.
+
+### Evidence
+
+9. All CI jobs pass on a fresh checkout at the proving commit.
+10. `docs/ACCEPTANCE.md` gains an M5 row linking the proving commit and CI run, and states
+    what M5 does not claim — in particular that CI installs no browser, so the rendered
+    fetch itself is not exercised there.
+
 ## M4 exit criteria
 
 M4 replaces the parts of the crawl loop that assumed a single, never-replaced worker: a

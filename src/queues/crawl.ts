@@ -46,12 +46,24 @@ export const removeCrawlJob = async (
       ])
     ).filter((job): job is Job<JobSpec> => Boolean(job));
     if (jobs.length === 0) return;
+
+    // BullMQ refuses to remove a job a worker still holds. Wait for it to leave the active
+    // state rather than retrying the removal blindly, so the wait tracks the thing that is
+    // actually blocking instead of hoping the next attempt lands differently.
+    const states = await Promise.all(
+      jobs.map((job) => job.getState().catch((): string => 'unknown')),
+    );
+    if (states.includes('active') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      continue;
+    }
+
     try {
       await Promise.all(jobs.map((job) => job.remove()));
       return;
     } catch (error: unknown) {
       if (Date.now() >= deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 150));
     }
   }
 };

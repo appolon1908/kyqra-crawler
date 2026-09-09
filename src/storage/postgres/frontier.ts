@@ -79,6 +79,7 @@ export const claimFrontierRequests = async (
   jobId: string,
   workerId: string,
   limit: number,
+  fetchers: readonly string[] = ['any', 'browser'],
 ): Promise<ClaimedFrontierRequest[]> => {
   const claimed = await db.query<{
     url: string;
@@ -92,13 +93,14 @@ export const claimFrontierRequests = async (
      from (
        select job_id,url_hash from frontier
        where job_id=$1 and state='pending' and scheduled_for<=now()
+         and fetcher = any($4::text[])
        order by priority desc, scheduled_for, url_hash
        for update skip locked
        limit $3
      ) due
      where target.job_id=due.job_id and target.url_hash=due.url_hash
      returning target.url, target.url_hash, target.host, target.depth, target.attempts`,
-    [jobId, workerId, limit],
+    [jobId, workerId, limit, [...fetchers]],
   );
   return claimed.rows.map((row) => ({
     url: row.url,
@@ -135,6 +137,37 @@ export const markFrontierFailed = async (
      where job_id=$1 and url_hash=$2`,
     [jobId, urlHash, reason.slice(0, 500)],
   );
+};
+
+/**
+ * Mark a row as owing a rendered fetch and return it to the pending pool.
+ *
+ * The HTTP pass already handled this URL, but its answer was judged incomplete, so the row
+ * is reopened rather than left `handled`. `attempts` is deliberately not incremented: an
+ * escalation is a change of fetcher, not a retry of a failure.
+ */
+export const escalateFrontierRequest = async (
+  db: Pool,
+  jobId: string,
+  urlHash: string,
+): Promise<boolean> => {
+  const escalated = await db.query(
+    `update frontier
+     set state='pending', fetcher='browser', claimed_by=null, claimed_at=null,
+         scheduled_for=now(), updated_at=now()
+     where job_id=$1 and url_hash=$2 and fetcher<>'browser'`,
+    [jobId, urlHash],
+  );
+  return (escalated.rowCount ?? 0) > 0;
+};
+
+/** How many rows of this job are waiting on a rendered fetch. */
+export const countEscalatedFrontierRequests = async (db: Pool, jobId: string): Promise<number> => {
+  const counts = await db.query<{ total: string }>(
+    "select count(*)::text as total from frontier where job_id=$1 and fetcher='browser'",
+    [jobId],
+  );
+  return Number(counts.rows[0]?.total ?? 0);
 };
 
 /** Return a claim to the pending pool, optionally after a delay, and count the attempt. */
@@ -197,21 +230,36 @@ export const frontierCounts = async (db: Pool, jobId: string): Promise<FrontierC
   return totals;
 };
 
-/** True when at least one row is claimable right now. */
-export const hasClaimableFrontierRequests = async (db: Pool, jobId: string): Promise<boolean> => {
+/** True when at least one row this worker can fetch is claimable right now. */
+export const hasClaimableFrontierRequests = async (
+  db: Pool,
+  jobId: string,
+  fetchers: readonly string[] = ['any', 'browser'],
+): Promise<boolean> => {
   const due = await db.query(
     `select 1 from frontier
-     where job_id=$1 and state='pending' and scheduled_for<=now() limit 1`,
-    [jobId],
+     where job_id=$1 and state='pending' and scheduled_for<=now()
+       and fetcher = any($2::text[]) limit 1`,
+    [jobId, [...fetchers]],
   );
   return (due.rowCount ?? 0) > 0;
 };
 
-/** True while any work remains: pending (due or scheduled) or claimed by some worker. */
-export const hasUnfinishedFrontierRequests = async (db: Pool, jobId: string): Promise<boolean> => {
+/**
+ * True while work this worker can fetch remains. Rows escalated to `browser` are invisible
+ * to the HTTP pass, so an escalation lets that pass finish and hand over rather than spin
+ * on rows it can never claim.
+ */
+export const hasUnfinishedFrontierRequests = async (
+  db: Pool,
+  jobId: string,
+  fetchers: readonly string[] = ['any', 'browser'],
+): Promise<boolean> => {
   const unfinished = await db.query(
-    `select 1 from frontier where job_id=$1 and state in ('pending','claimed') limit 1`,
-    [jobId],
+    `select 1 from frontier
+     where job_id=$1 and state in ('pending','claimed')
+       and fetcher = any($2::text[]) limit 1`,
+    [jobId, [...fetchers]],
   );
   return (unfinished.rowCount ?? 0) > 0;
 };
