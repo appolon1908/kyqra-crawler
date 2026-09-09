@@ -29,7 +29,7 @@ acceptance checklists on their own issues.
 | M2        | Reversible PostgreSQL migrations replace boot-time DDL    | #25                | Complete |
 | M3        | Crawl-target SSRF, robots.txt, and probe-surface controls | #9, #10, #30       | Complete |
 | M4        | Durable frontier, real cancellation, graceful shutdown    | #15, #16, #17, #21 | Complete |
-| M5        | Adaptive `browser=auto` escalation                        | #14                | Planned  |
+| M5        | Adaptive `browser=auto` escalation                        | #14                | Complete |
 | M6        | Tenant-isolated authenticated crawling                    | #23                | Planned  |
 | M7        | Sitemap, pagination, and compliant search discovery       | #13, #22           | Planned  |
 | M8        | Extraction packs and real field-level provenance          | #12, #18, #24      | Planned  |
