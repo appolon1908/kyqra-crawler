@@ -7,9 +7,11 @@ import { createCrawlTargetResolver } from '../../src/delivery/security.js';
 import {
   createGuardedRobotsFetcher,
   createRobotsCache,
+  normalizeMatchPath,
   parseRobotsTxt,
   policyFromFetch,
   robotsUrlFor,
+  robotsWarmupOrigins,
   type RobotsFetchResult,
 } from '../../src/frontier/robots.js';
 
@@ -110,6 +112,94 @@ describe('robots.txt evaluation', () => {
     expect(policy.isAllowed('https://example.test/a-x-c')).toBe(true);
   });
 
+  it('matches a rule against percent-encoded unreserved octets', () => {
+    // RFC 9309 section 2.2.2 compares paths with unreserved escapes decoded, and servers
+    // route /private and /%70rivate to the same resource.
+    const policy = parseRobotsTxt(['User-agent: *', 'Disallow: /private'].join('\n'));
+    expect(policy.isAllowed('https://example.test/private/report')).toBe(false);
+    expect(policy.isAllowed('https://example.test/%70rivate/report')).toBe(false);
+    expect(policy.isAllowed('https://example.test/%50RIVATE')).toBe(true);
+
+    // A rule written with an escape still covers the decoded path.
+    const encodedRule = parseRobotsTxt(['User-agent: *', 'Disallow: /%70rivate'].join('\n'));
+    expect(encodedRule.isAllowed('https://example.test/private')).toBe(false);
+
+    // Reserved octets keep their escape; %2F is a separator, not a slash to decode.
+    expect(normalizeMatchPath('/a%2Fb')).toBe('/a%2Fb');
+    expect(normalizeMatchPath('/%7Euser/%2Dx')).toBe('/~user/-x');
+  });
+
+  it('merges every group that names the crawler, not just the first', () => {
+    // RFC 9309 section 2.2.1 requires records for the same product token to be combined.
+    const content = [
+      'User-agent: KyqraCrawler',
+      'Disallow: /first',
+      'Crawl-delay: 2',
+      '',
+      'User-agent: KyqraCrawler',
+      'Disallow: /second',
+      'Crawl-delay: 5',
+      '',
+      'User-agent: *',
+      'Disallow: /',
+    ].join('\n');
+    const policy = parseRobotsTxt(content, 'KyqraCrawler');
+    expect(policy.isAllowed('https://example.test/first')).toBe(false);
+    // Declared only in the later block, and previously crawled.
+    expect(policy.isAllowed('https://example.test/second')).toBe(false);
+    expect(policy.isAllowed('https://example.test/open')).toBe(true);
+    // Merged records can each declare a delay; the most conservative wins.
+    expect(policy.crawlDelaySeconds).toBe(5);
+  });
+
+  it('keeps applying the last known policy once an entry passes its TTL', async () => {
+    let fetches = 0;
+    let clock = 1_000;
+    const cache = createRobotsCache({
+      ttlSeconds: 10,
+      now: () => clock,
+      fetch: async (): Promise<RobotsFetchResult> => {
+        fetches += 1;
+        return { status: 200, body: 'User-agent: *\nDisallow: /blocked' };
+      },
+    });
+    await cache.policyFor('https://slow.test/');
+    expect(cache.isAllowedCached('https://slow.test/open')).toBe(true);
+
+    clock += 11_000;
+    // A crawl outliving the TTL must not silently stop enqueuing an allowed origin.
+    expect(cache.isKnown('https://slow.test/open')).toBe(true);
+    expect(cache.isAllowedCached('https://slow.test/open')).toBe(true);
+    expect(cache.isAllowedCached('https://slow.test/blocked')).toBe(false);
+
+    await cache.policyFor('https://slow.test/open');
+    expect(fetches).toBe(2);
+  });
+
+  it('separates an origin never fetched from one whose entry is merely stale', async () => {
+    const cache = createRobotsCache({
+      fetch: async (): Promise<RobotsFetchResult> => ({ status: 200, body: '' }),
+    });
+    expect(cache.isKnown('https://unseen.test/a')).toBe(false);
+    expect(cache.isAllowedCached('https://unseen.test/a')).toBe(false);
+    await cache.policyFor('https://unseen.test/a');
+    expect(cache.isKnown('https://unseen.test/a')).toBe(true);
+    expect(cache.isKnown('not-a-url')).toBe(false);
+  });
+
+  it('warms the sibling scheme of a seed host so its links are not dropped', () => {
+    expect(robotsWarmupOrigins('http://example.test/start')).toEqual([
+      'http://example.test',
+      'https://example.test',
+    ]);
+    expect(robotsWarmupOrigins('https://example.test/start')).toEqual([
+      'https://example.test',
+      'http://example.test',
+    ]);
+    // An explicit port has no standard sibling worth probing.
+    expect(robotsWarmupOrigins('http://127.0.0.1:8080/start')).toEqual(['http://127.0.0.1:8080']);
+  });
+
   it('caps a hostile crawl-delay at the configured ceiling', () => {
     process.env.ROBOTS_MAX_CRAWL_DELAY_SECONDS = '5';
     const policy = parseRobotsTxt(['User-agent: *', 'Crawl-delay: 86400'].join('\n'));
@@ -155,7 +245,9 @@ describe('robots.txt evaluation', () => {
     expect(cache.maxCrawlDelaySeconds()).toBe(2);
 
     clock += 11_000;
-    expect(cache.peek('https://example.test/a')).toBeUndefined();
+    // An expired entry is stale, not absent: the synchronous path keeps applying the last
+    // known answer while the asynchronous path refetches it.
+    expect(cache.peek('https://example.test/a')).toBeDefined();
     await cache.policyFor('https://example.test/a');
     expect(fetches).toBe(2);
   });

@@ -34,7 +34,7 @@ import {
   type HostRateLimiter,
 } from '../frontier/rate-limit.js';
 import { PostgresFrontier } from '../frontier/request-manager.js';
-import { createRobotsCache, type RobotsCache } from '../frontier/robots.js';
+import { createRobotsCache, robotsWarmupOrigins, type RobotsCache } from '../frontier/robots.js';
 import { log } from '../observability/logger.js';
 import {
   queueCompletionCallbacks,
@@ -120,12 +120,17 @@ const transformDiscoveredRequest = (
   spec: JobSpec,
   depth: number,
   robots: RobotsCache,
+  jobId: string,
 ): RequestOptions | false => {
   try {
     const normalized = canonicalizeUrl(request.url);
     if (!shouldEnqueue(normalized, roots, spec)) return false;
-    // Robots policies for every seed origin are loaded before the crawl starts, and
-    // discovered links are same-hostname, so this cached decision is authoritative.
+    // Enqueue decisions are synchronous and cannot fetch, so an origin never loaded fails
+    // closed. Say so rather than dropping the link silently.
+    if (!robots.isKnown(normalized)) {
+      log('warn', 'robots_origin_unknown', { jobId, url: safeLogUrl(normalized) });
+      return false;
+    }
     if (!robots.isAllowedCached(normalized)) return false;
     request.url = normalized;
     request.userData = { depth: depth + 1 };
@@ -309,7 +314,11 @@ export const processCrawlJob = async (
     await Promise.all(spec.startUrls.map((url) => guardTarget(url)));
     // Robots policies are cached before the frontier is seeded, so no disallowed URL is
     // ever enqueued and the declared crawl-delay can bound the per-host request rate.
-    await Promise.all(spec.startUrls.map((url) => robots.policyFor(url)));
+    await Promise.all(
+      [...new Set(spec.startUrls.flatMap(robotsWarmupOrigins))].map((origin) =>
+        robots.policyFor(origin),
+      ),
+    );
     const permittedSeeds = spec.startUrls.filter((url) => robots.isAllowedCached(url));
     if (permittedSeeds.length < spec.startUrls.length) {
       log('warn', 'robots_seeds_disallowed', {
@@ -342,7 +351,10 @@ export const processCrawlJob = async (
         throw new NonRetryableError('job_no_longer_running');
       }
       await guardTarget(request.url);
-      if (!robots.isAllowedCached(request.url)) {
+      // Authoritative check: this path can fetch, so it refreshes a policy that expired
+      // mid-crawl and covers any origin a redirect or discovery produced.
+      const policy = await robots.policyFor(request.url);
+      if (!policy.isAllowed(request.url)) {
         throw new NonRetryableError('robots_disallowed');
       }
       await limiter.acquire(hostOf(request.url), cancelSignal);
@@ -421,7 +433,7 @@ export const processCrawlJob = async (
               await context.enqueueLinks({
                 strategy: 'same-hostname',
                 transformRequestFunction: (request) =>
-                  transformDiscoveredRequest(request, roots, spec, depth, robots),
+                  transformDiscoveredRequest(request, roots, spec, depth, robots, jobId),
               });
             }
           },
@@ -446,10 +458,18 @@ export const processCrawlJob = async (
                 const location = response.headers.location;
                 if (!location) return false;
                 const target = validateCrawlRedirectTarget(location, response.url);
-                // Only origins whose robots.txt is already cached are judged here; an
-                // unknown origin still passes the target policy above before connecting.
-                const known = robots.peek(target);
-                return !known || known.isAllowed(target);
+                // This callback is synchronous and cannot fetch robots.txt, so an origin
+                // with no loaded policy fails closed rather than being followed on trust.
+                // Seed hosts are warmed on both schemes, so the ordinary HTTP-to-HTTPS
+                // upgrade is covered; anything further afield is refused deliberately.
+                if (!robots.isKnown(target)) {
+                  log('warn', 'robots_redirect_origin_unknown', {
+                    jobId,
+                    url: safeLogUrl(target),
+                  });
+                  return false;
+                }
+                return robots.peek(target)?.isAllowed(target) ?? false;
               };
             },
           ],
@@ -485,7 +505,7 @@ export const processCrawlJob = async (
               await context.enqueueLinks({
                 strategy: 'same-hostname',
                 transformRequestFunction: (request) =>
-                  transformDiscoveredRequest(request, roots, spec, depth, robots),
+                  transformDiscoveredRequest(request, roots, spec, depth, robots, jobId),
               });
             }
           },

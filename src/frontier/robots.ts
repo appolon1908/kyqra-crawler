@@ -62,6 +62,24 @@ export const robotsUrlFor = (rawUrl: string): string => new URL('/robots.txt', r
 export const robotsOriginOf = (rawUrl: string): string => new URL(rawUrl).origin;
 
 /**
+ * Origins whose robots.txt should be loaded before a crawl starts: the seed's own origin,
+ * and the same host on the other standard scheme. Link discovery matches on hostname, so
+ * an `http` seed linking to `https` on the same host yields a different origin, and
+ * without warming it those links are dropped as unknown. A seed carrying an explicit port
+ * has no meaningful sibling, so none is warmed for it.
+ */
+export const robotsWarmupOrigins = (seedUrl: string): string[] => {
+  const url = new URL(seedUrl);
+  const origins = [url.origin];
+  if (!url.port) {
+    const sibling = new URL(url.toString());
+    sibling.protocol = url.protocol === 'https:' ? 'http:' : 'https:';
+    origins.push(sibling.origin);
+  }
+  return [...new Set(origins)];
+};
+
+/**
  * Convert a robots.txt path pattern into an anchored expression. `*` matches any
  * sequence and a trailing `$` anchors the end of the path, per RFC 9309 section 2.2.3.
  */
@@ -69,41 +87,70 @@ const patternToRegExp = (pattern: string): RegExp => {
   const anchored = pattern.endsWith('$');
   // Runs of `*` are equivalent to a single `*`; collapsing them keeps a hostile
   // robots.txt from producing a pathologically backtracking expression.
-  const body = (anchored ? pattern.slice(0, -1) : pattern).replaceAll(/\*+/g, '*');
+  const body = normalizeMatchPath(anchored ? pattern.slice(0, -1) : pattern).replaceAll(
+    /\*+/g,
+    '*',
+  );
   const escaped = body.replaceAll(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*');
   return new RegExp(`^${escaped}${anchored ? '$' : ''}`);
 };
 
+/**
+ * RFC 9309 section 2.2.2 compares paths with percent-encoded unreserved octets decoded,
+ * and servers routinely route `/private` and `/%70rivate` to the same resource. Without
+ * this, an encoded URL slips past a rule that plainly covers it.
+ */
+export const normalizeMatchPath = (path: string): string =>
+  path.replaceAll(/%[0-9A-Fa-f]{2}/g, (escape) => {
+    const code = Number.parseInt(escape.slice(1), 16);
+    const character = String.fromCharCode(code);
+    return /[A-Za-z0-9\-._~]/.test(character) ? character : escape.toUpperCase();
+  });
+
 const requestPath = (rawUrl: string): string => {
   const url = new URL(rawUrl);
-  return `${url.pathname}${url.search}`;
+  return normalizeMatchPath(`${url.pathname}${url.search}`);
+};
+
+/** Length of the most specific token in this group that matches the crawler, or -1. */
+const groupSpecificity = (group: RobotsGroup, userAgent: string): number => {
+  let best = -1;
+  for (const agent of group.agents) {
+    // A `User-agent:` line with no token matches nothing; without this guard the empty
+    // string would substring-match every crawler at specificity zero.
+    if (!agent || agent === '*') continue;
+    if (userAgent.includes(agent)) best = Math.max(best, agent.length);
+  }
+  return best;
 };
 
 /**
- * Select the group whose product token best matches the crawler. The longest matching
- * token wins; `*` is the fallback group when no explicit token matches.
+ * Combine every group that applies to the crawler. RFC 9309 section 2.2.1 requires records
+ * for the same product token to be merged, so a rule that appears only in a second
+ * `User-agent: KyqraCrawler` block is still binding. The wildcard group applies only when
+ * no explicit token matches at all.
  */
 const selectGroup = (groups: RobotsGroup[], userAgent: string): RobotsGroup | undefined => {
   const normalized = userAgent.toLowerCase();
-  let best: RobotsGroup | undefined;
-  let bestLength = -1;
-  let wildcard: RobotsGroup | undefined;
-  for (const group of groups) {
-    for (const agent of group.agents) {
-      if (agent === '*') {
-        wildcard = wildcard ? { ...wildcard, rules: [...wildcard.rules, ...group.rules] } : group;
-        continue;
-      }
-      // A `User-agent:` line with no token matches nothing; without this guard the
-      // empty string would substring-match every crawler at specificity zero.
-      if (!agent) continue;
-      if (normalized.includes(agent) && agent.length > bestLength) {
-        best = group;
-        bestLength = agent.length;
-      }
-    }
-  }
-  return best ?? wildcard;
+  const specificities = groups.map((group) => groupSpecificity(group, normalized));
+  const best = Math.max(-1, ...specificities);
+  const matching =
+    best >= 0
+      ? groups.filter((_group, index) => specificities[index] === best)
+      : groups.filter((group) => group.agents.includes('*'));
+  if (matching.length === 0) return undefined;
+
+  return matching.reduce((merged, group) => {
+    const delays = [merged.crawlDelaySeconds, group.crawlDelaySeconds].filter(
+      (value): value is number => typeof value === 'number',
+    );
+    return {
+      agents: [...merged.agents, ...group.agents],
+      rules: [...merged.rules, ...group.rules],
+      // Merged records can each declare a delay; honour the most conservative.
+      ...(delays.length > 0 ? { crawlDelaySeconds: Math.max(...delays) } : {}),
+    };
+  });
 };
 
 export const parseRobotsTxt = (content: string, userAgent = robotsUserAgent()): RobotsPolicy => {
@@ -262,8 +309,10 @@ export interface RobotsCacheOptions {
 export interface RobotsCache {
   /** Fetch (or reuse) the policy for the URL's origin. */
   policyFor: (rawUrl: string) => Promise<RobotsPolicy>;
-  /** Cached policy for the URL's origin, without performing any network request. */
+  /** Last known policy for the URL's origin, even if past its TTL, without any fetch. */
   peek: (rawUrl: string) => RobotsPolicy | undefined;
+  /** True when this origin's robots.txt has been fetched at least once. */
+  isKnown: (rawUrl: string) => boolean;
   /** Synchronous enqueue-time decision. Fails closed when the origin is not cached. */
   isAllowedCached: (rawUrl: string) => boolean;
   /** Sitemap URLs declared by every origin fetched so far. */
@@ -296,13 +345,14 @@ export const createRobotsCache = (options: RobotsCacheOptions = {}): RobotsCache
 
   const live = (origin: string): RobotsPolicy | undefined => {
     const entry = entries.get(origin);
-    if (!entry) return undefined;
-    if (entry.expiresAt <= now()) {
-      entries.delete(origin);
-      return undefined;
-    }
+    if (!entry || entry.expiresAt <= now()) return undefined;
     return entry.policy;
   };
+
+  // A policy past its TTL is stale, not absent. Enqueue decisions are synchronous and
+  // cannot refetch, so they keep applying the last known answer while the asynchronous
+  // path refreshes it; treating expiry as a denial would silently stall a long crawl.
+  const stale = (origin: string): RobotsPolicy | undefined => entries.get(origin)?.policy;
 
   const policyFor = async (rawUrl: string): Promise<RobotsPolicy> => {
     const origin = robotsOriginOf(rawUrl);
@@ -327,14 +377,22 @@ export const createRobotsCache = (options: RobotsCacheOptions = {}): RobotsCache
     policyFor,
     peek: (rawUrl: string): RobotsPolicy | undefined => {
       try {
-        return live(robotsOriginOf(rawUrl));
+        return stale(robotsOriginOf(rawUrl));
       } catch {
         return undefined;
       }
     },
     isAllowedCached: (rawUrl: string): boolean => {
       try {
-        return live(robotsOriginOf(rawUrl))?.isAllowed(rawUrl) ?? false;
+        // Still fails closed for an origin that was never fetched.
+        return stale(robotsOriginOf(rawUrl))?.isAllowed(rawUrl) ?? false;
+      } catch {
+        return false;
+      }
+    },
+    isKnown: (rawUrl: string): boolean => {
+      try {
+        return entries.has(robotsOriginOf(rawUrl));
       } catch {
         return false;
       }
