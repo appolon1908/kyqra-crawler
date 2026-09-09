@@ -42,6 +42,23 @@ const waitForCompleted = async (client: SuperTest<Test>, jobId: string): Promise
   throw new Error('crawl_completion_timeout');
 };
 
+const waitForTerminalStatus = async (
+  client: SuperTest<Test>,
+  jobId: string,
+): Promise<{ status: string; error?: string }> => {
+  const deadline = Date.now() + 25_000;
+  while (Date.now() < deadline) {
+    const response = await client
+      .get(`/api/v1/jobs/${jobId}`)
+      .set('Authorization', `Bearer ${API_TOKEN}`);
+    if (['completed', 'failed', 'cancelled'].includes(String(response.body.status))) {
+      return response.body;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error('crawl_terminal_timeout');
+};
+
 describe('HTTP job submission through real Redis and Postgres', () => {
   let postgres: StartedPostgreSqlContainer;
   let redis: StartedRedisContainer;
@@ -114,7 +131,11 @@ describe('HTTP job submission through real Redis and Postgres', () => {
   it('submits over HTTP, crawls the fixture, and persists tenant-scoped results', async () => {
     expect((await client.get('/')).status).toBe(200);
     expect((await client.get('/healthz')).body).toEqual({ status: 'ok' });
-    expect((await client.get('/readyz')).body).toEqual({
+    // Deep probes left the public surface in M3; they now require a bearer token here
+    // and are served unauthenticated only on the internal listener.
+    expect((await client.get('/readyz')).status).toBe(401);
+    expect((await client.get('/health')).status).toBe(401);
+    expect((await client.get('/readyz').set('Authorization', `Bearer ${API_TOKEN}`)).body).toEqual({
       status: 'ok',
       redis: 'ok',
       postgres: 'ok',
@@ -580,5 +601,94 @@ describe('HTTP job submission through real Redis and Postgres', () => {
           .send({ url: 'https://unapproved.example.test/events' })
       ).status,
     ).toBe(400);
+  });
+  it('refuses robots-disallowed seeds and never enqueues disallowed discovered links', async () => {
+    fixture.app.get('/robots.txt', (_request, response) => {
+      response
+        .type('text/plain')
+        .send(
+          [
+            'User-agent: *',
+            'Disallow: /vault',
+            'Allow: /vault/public',
+            'Crawl-delay: 1',
+            `Sitemap: ${fixture.baseUrl}/sitemap.xml`,
+            '',
+          ].join('\n'),
+        );
+    });
+    const page = (title: string, body = ''): string =>
+      `<!doctype html><html><head><title>${title}</title>` +
+      `<meta property="og:site_name" content="${title}"></head><body>${body}</body></html>`;
+    fixture.app.get('/hub', (_request, response) => {
+      response
+        .type('html')
+        .send(
+          page(
+            'Hub Fixture',
+            '<a href="/vault/secret">secret</a><a href="/vault/public">public</a>' +
+              '<a href="/open-child">open</a>',
+          ),
+        );
+    });
+    fixture.app.get('/open-child', (_request, response) =>
+      response.type('html').send(page('Open Child')),
+    );
+    fixture.app.get('/vault/secret', (_request, response) =>
+      response.type('html').send(page('Vault Secret')),
+    );
+    fixture.app.get('/vault/public', (_request, response) =>
+      response.type('html').send(page('Vault Public')),
+    );
+
+    const refused = await client
+      .post('/api/v1/jobs')
+      .set('Authorization', `Bearer ${API_TOKEN}`)
+      .set('Idempotency-Key', 'robots-disallowed-seed')
+      .set('X-Correlation-Id', 'robots-disallowed-seed')
+      .send({
+        startUrls: [`${fixture.baseUrl}/vault/secret`],
+        mode: 'single',
+        maxPages: 1,
+        maxDepth: 0,
+        browser: 'http',
+      });
+    expect(refused.status).toBe(202);
+    const refusedState = await waitForTerminalStatus(client, String(refused.body.id));
+    expect(refusedState.status).toBe('failed');
+    expect(String(refusedState.error)).toContain('robots_disallowed_all_seeds');
+    const refusedResults = await client
+      .get(`/api/v1/jobs/${String(refused.body.id)}/results`)
+      .set('Authorization', `Bearer ${API_TOKEN}`);
+    expect(refusedResults.body.count).toBe(0);
+
+    const discovery = await client
+      .post('/api/v1/jobs')
+      .set('Authorization', `Bearer ${API_TOKEN}`)
+      .set('Idempotency-Key', 'robots-discovery')
+      .set('X-Correlation-Id', 'robots-discovery')
+      .send({
+        startUrls: [`${fixture.baseUrl}/hub`],
+        mode: 'domain',
+        maxPages: 10,
+        maxDepth: 1,
+        browser: 'http',
+        requestsPerSecond: 20,
+      });
+    expect(discovery.status).toBe(202);
+    const discoveryId = String(discovery.body.id);
+    await waitForCompleted(client, discoveryId);
+
+    const crawled = await runtime.db.query<{ url: string }>(
+      'select url from results where job_id=$1 order by url',
+      [discoveryId],
+    );
+    const paths = crawled.rows.map((row) => new URL(row.url).pathname);
+    expect(paths).toContain('/hub');
+    expect(paths).toContain('/open-child');
+    // Allow overrides the broader Disallow for this one path.
+    expect(paths).toContain('/vault/public');
+    // The disallowed link was never enqueued, so it was never fetched or stored.
+    expect(paths).not.toContain('/vault/secret');
   });
 });

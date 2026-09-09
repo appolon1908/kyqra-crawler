@@ -26,13 +26,17 @@ the service-principal registry: only lowercase SHA-256 digests are accepted and 
 constant-time. A principal has exactly one tenant and client identity. If supplied, `X-Tenant-Id`
 must match that identity. Operational routes additionally require the `operations` role.
 
-Public routes are limited to the dashboard and health/contract discovery:
+Public routes are limited to the dashboard, shallow liveness, and contract discovery:
 
 - `GET /`
-- `GET /health`, `/healthz`, `/readyz`
-- `GET /health/live`, `/health/ready`
-- `GET /api/v1/health`
+- `GET /healthz`, `/health/live`, `/api/v1/health`
 - `GET /openapi.json`
+
+`GET /health`, `GET /readyz`, and `GET /health/ready` run Redis and PostgreSQL probes.
+On the public listener they require a bearer token; the Nginx public policy returns 404
+for all three. They are also served without authentication on an internal listener
+(`INTERNAL_HEALTH_HOST`/`INTERNAL_HEALTH_PORT`, default `127.0.0.1:3001`) that compose
+never publishes, which is what container health checks and the installer use.
 
 Canonical authenticated routes:
 
@@ -86,9 +90,72 @@ Before enqueueing and before every navigation, Kyqra enforces:
 - Playwright subresource interception
 - maximum pages, depth, request rate, body size, and request timeouts
 
+### robots.txt
+
+`robots.txt` is fetched for every seed origin through the same pinned-address policy as
+crawl targets, before the frontier is populated, and cached per origin
+(`ROBOTS_CACHE_TTL_SECONDS`, default one hour). `Allow`, `Disallow`, `Crawl-delay`, and
+`Sitemap` are parsed with most-specific-rule precedence, `Allow` breaking ties, `*` and
+`$` patterns, and per-user-agent group selection (`ROBOTS_USER_AGENT`, default
+`KyqraCrawler`).
+
+No disallowed URL is enqueued, as a seed or as a discovered link, and the decision is
+rechecked before each navigation. A job whose every seed is disallowed fails with
+`robots_disallowed_all_seeds` instead of reporting an empty successful crawl. A declared
+`Crawl-delay` raises the per-host delay when it exceeds the job's configured rate, capped
+by `ROBOTS_MAX_CRAWL_DELAY_SECONDS` (default 30) so a hostile host cannot stall a worker.
+Following RFC 9309, an origin whose `robots.txt` is unreachable (5xx or transport
+failure) is not crawled, while a 4xx is treated as "no restrictions". Declared sitemaps
+are recorded; sitemap-driven discovery is M7.
+
 `KYQRA_ALLOW_TEST_TARGETS=true` exists only for isolated tests and must never be present in production.
-`browser=auto` currently routes to the HTTP worker; request `browser=playwright` explicitly when a
-rendered browser is required.
+
+### Fetcher selection
+
+`browser=http` and `browser=playwright` pick a fetcher outright. `browser=auto` starts on the
+HTTP worker and escalates only when a page proves it needs rendering: an empty framework mount
+point, a `<noscript>` prompt on a page with no extracted content, or a script-dominated shell
+with almost no text. A page that delivered its content stays on HTTP, and so does a thin page
+that carries no script.
+
+An escalated job is handed to the browser worker rather than rendered in place, because that is
+the container provisioned with the shared memory a browser needs. It reuses the durable frontier:
+rows judged render-dependent are reopened and marked as owing a rendered fetch, work already done
+stays done, and the browser pass resumes from the same frontier. An escalation is not a failure —
+the job stays runnable throughout.
+
+Every result records its fetcher, and a rendered result supersedes the HTTP one for the same URL;
+the reverse never happens. `GET /api/v1/jobs/{id}/results` reports the fetcher per row plus a
+per-fetcher summary, the CSV export carries the same column, and the deciding signal is written to
+the job event timeline so an escalation can be explained after the fact.
+
+## Frontier, pacing, and lifecycle
+
+The crawl frontier is the `frontier` table in PostgreSQL, not a directory on one worker.
+Crawlee is driven through a request manager backed by that table, so nothing is written to
+a worker filesystem. A worker claims rows with `for update skip locked`, recording its
+identity and the time, which lets replicas take disjoint work from the same frontier. A URL
+discovered twice is stored once, work already handled is never reissued, and the frontier is
+deleted when its job reaches a terminal state.
+
+A claim that goes quiet for `FRONTIER_VISIBILITY_SECONDS` returns to the pending pool, swept
+every `FRONTIER_SWEEP_SECONDS`, so a replica killed outright cannot strand a job.
+
+Cancelling a job reaches a worker that is already running it: the API publishes on Redis and
+every worker also polls the job row, so fetching stops within seconds rather than at the next
+request boundary. In-flight fetches and rate-limiter waits are aborted, and a cancelled job is
+never later recorded as failed or completed.
+
+SIGTERM starts an ordered shutdown — stop claiming, let in-flight work settle, release this
+worker's claims, close connections — bounded by `SHUTDOWN_GRACE_SECONDS`. An interrupted job
+is not marked failed; it keeps its frontier and resumes on the next attempt without losing or
+repeating work.
+
+Per-host pacing is a Redis token bucket, so replicas share one budget for a host instead of
+each applying its own delay. The rate is the most restrictive of the job's `requestsPerSecond`,
+the robots.txt `Crawl-delay`, and the host's `domains` row. `Retry-After` on 429 and 503 is
+honored, repeated failures reduce the rate adaptively down to a floor and recover on success,
+and a host that keeps failing has its circuit opened for a cooling-off window.
 
 ## Secrets and configuration
 
