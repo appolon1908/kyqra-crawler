@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

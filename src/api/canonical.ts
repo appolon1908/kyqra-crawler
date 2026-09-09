@@ -202,7 +202,7 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
                 },
               };
             }
-            await removeCrawlJob(runtime, job.id, { waitMs: 5_000 });
+            await removeCrawlJob(runtime, job.id, { waitMs: 20_000 });
           }
           try {
             await crawlQueueForSpec(runtime, payload).add('crawl', payload, { jobId: job.id });
@@ -239,7 +239,7 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
           };
         }
         try {
-          await removeCrawlJob(runtime, job.id, { waitMs: 5_000 });
+          await removeCrawlJob(runtime, job.id, { waitMs: 20_000 });
           await crawlQueueForSpec(runtime, payload).add('crawl', payload, { jobId: job.id });
         } catch (error: unknown) {
           await markJobFailed(runtime.db, job.id, 'queue_reconcile_failed');

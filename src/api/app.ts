@@ -315,7 +315,7 @@ export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
           return { code: 409, body: { id: request.params.id, error: 'job_state_changed' } };
         }
         try {
-          await removeCrawlJob(runtime, request.params.id, { waitMs: 5_000 });
+          await removeCrawlJob(runtime, request.params.id, { waitMs: 20_000 });
           await crawlQueueForSpec(runtime, payload).add('crawl', payload, {
             jobId: request.params.id,
           });
