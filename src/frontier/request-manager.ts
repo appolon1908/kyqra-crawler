@@ -38,6 +38,8 @@ export interface PostgresFrontierOptions {
   maxRequests?: number;
   /** Delay applied when a failed request is returned to the pending pool. */
   reclaimDelaySeconds?: number;
+  /** Which `frontier.fetcher` values this worker may claim. */
+  fetchers?: readonly string[];
 }
 
 interface RequestUserData {
@@ -104,6 +106,9 @@ export class PostgresFrontier {
   private readonly maxRequests: number | undefined;
   private readonly reclaimDelaySeconds: number;
   private readonly inFlight = new Map<string, Request>();
+  /** Requests reopened for a rendered fetch, which must not be closed by this pass. */
+  private readonly escalated = new Set<string>();
+  private readonly fetchers: readonly string[];
   private totalCount = 0;
   private pendingCount = 0;
   private handled = 0;
@@ -114,6 +119,7 @@ export class PostgresFrontier {
     this.workerId = options.workerId;
     this.maxRequests = options.maxRequests;
     this.reclaimDelaySeconds = options.reclaimDelaySeconds ?? 1;
+    this.fetchers = options.fetchers ?? ['any', 'browser'];
     this.name = `job-${options.jobId}`;
   }
 
@@ -138,15 +144,21 @@ export class PostgresFrontier {
   }
 
   async isEmpty(): Promise<boolean> {
-    return !(await hasClaimableFrontierRequests(this.db, this.jobId));
+    return !(await hasClaimableFrontierRequests(this.db, this.jobId, this.fetchers));
   }
 
   async isFinished(): Promise<boolean> {
-    return !(await hasUnfinishedFrontierRequests(this.db, this.jobId));
+    return !(await hasUnfinishedFrontierRequests(this.db, this.jobId, this.fetchers));
   }
 
   async fetchNextRequest<T extends Record<string, unknown>>(): Promise<Request<T> | null> {
-    const [claimed] = await claimFrontierRequests(this.db, this.jobId, this.workerId, 1);
+    const [claimed] = await claimFrontierRequests(
+      this.db,
+      this.jobId,
+      this.workerId,
+      1,
+      this.fetchers,
+    );
     if (!claimed) return null;
     const request = new Request<T>({
       id: claimed.urlHash,
@@ -166,7 +178,27 @@ export class PostgresFrontier {
     }
   }
 
+  /**
+   * Note that a request was reopened for a rendered fetch. Crawlee marks a request handled
+   * once its handler returns, which would immediately close the row the handler had just
+   * reopened, so this pass has to leave it alone.
+   */
+  markEscalated(uniqueKey: string): void {
+    this.escalated.add(uniqueKey);
+  }
+
   async markRequestHandled(request: Request): Promise<OperationInfoLike> {
+    if (this.escalated.delete(request.uniqueKey)) {
+      this.inFlight.delete(request.uniqueKey);
+      this.pendingCount = Math.max(0, this.pendingCount - 1);
+      return {
+        uniqueKey: request.uniqueKey,
+        requestId: request.uniqueKey,
+        wasAlreadyPresent: true,
+        wasAlreadyHandled: false,
+        forefront: false,
+      };
+    }
     await markFrontierHandled(this.db, this.jobId, request.uniqueKey);
     this.inFlight.delete(request.uniqueKey);
     this.handled += 1;

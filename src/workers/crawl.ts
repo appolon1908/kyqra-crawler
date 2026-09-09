@@ -293,6 +293,14 @@ export const processCrawlJob = async (
   // issued finish and be recorded, so a resume neither refetches nor loses them.
   const cancelSignal = cancellation.signal;
 
+  // `auto` starts on the HTTP worker and is rendered only once escalated onto the browser
+  // queue, which is where the container has the shared memory a browser needs.
+  const kind: CrawlWorkerKind =
+    options.kind ?? (spec.browser === 'playwright' ? 'browser' : 'http');
+  const useBrowser = spec.browser === 'playwright' || kind === 'browser';
+  const mayEscalate = spec.browser === 'auto' && kind === 'http';
+  const escalated = new Set<string>();
+
   // No local storage: the frontier lives in PostgreSQL and Crawlee keeps only its own
   // statistics, which stay in memory.
   const crawlConfiguration = new Configuration({ purgeOnStart: false, persistStorage: false });
@@ -301,6 +309,9 @@ export const processCrawlJob = async (
     jobId,
     workerId,
     maxRequests: spec.maxPages,
+    // The HTTP pass cannot satisfy a row that owes a rendered fetch, so it never claims
+    // one; that is what lets it finish and hand the job over.
+    fetchers: useBrowser ? ['any', 'browser'] : ['any'],
   });
   // Crawlee validates crawler options with an exact shape that omits `requestManager`.
   // A bare `requestQueue` is accepted, and `initializeRequestManager` then uses it as the
@@ -308,13 +319,6 @@ export const processCrawlJob = async (
   const frontierAsQueue = frontier as unknown as RequestProvider;
   let pinnedProxy: PinnedCrawlProxy | undefined;
   let crawler: CheerioCrawler | PlaywrightCrawler | undefined;
-  // `auto` starts on the HTTP worker and is rendered only once escalated onto the browser
-  // queue, which is where the container has the shared memory a browser needs.
-  const kind: CrawlWorkerKind =
-    options.kind ?? (spec.browser === 'playwright' ? 'browser' : 'http');
-  const useBrowser = spec.browser === 'playwright' || kind === 'browser';
-  const mayEscalate = spec.browser === 'auto' && kind === 'http';
-  const escalated = new Set<string>();
 
   const onCancelled = (): void => {
     log('info', 'crawl_cancelled', { jobId, reason: cancellation.reason() ?? 'cancelled' });
@@ -396,6 +400,7 @@ export const processCrawlJob = async (
     ): Promise<void> => {
       if (!(await escalateFrontierRequest(runtime.db, jobId, request.uniqueKey))) return;
       escalated.add(request.uniqueKey);
+      frontier.markEscalated(request.uniqueKey);
       await recordEscalation(runtime.db, jobId, {
         url: safeLogUrl(request.url),
         reason: verdict.reason,
