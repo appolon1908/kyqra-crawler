@@ -109,8 +109,25 @@ failure) is not crawled, while a 4xx is treated as "no restrictions". Declared s
 are recorded; sitemap-driven discovery is M7.
 
 `KYQRA_ALLOW_TEST_TARGETS=true` exists only for isolated tests and must never be present in production.
-`browser=auto` currently routes to the HTTP worker; request `browser=playwright` explicitly when a
-rendered browser is required.
+
+### Fetcher selection
+
+`browser=http` and `browser=playwright` pick a fetcher outright. `browser=auto` starts on the
+HTTP worker and escalates only when a page proves it needs rendering: an empty framework mount
+point, a `<noscript>` prompt on a page with no extracted content, or a script-dominated shell
+with almost no text. A page that delivered its content stays on HTTP, and so does a thin page
+that carries no script.
+
+An escalated job is handed to the browser worker rather than rendered in place, because that is
+the container provisioned with the shared memory a browser needs. It reuses the durable frontier:
+rows judged render-dependent are reopened and marked as owing a rendered fetch, work already done
+stays done, and the browser pass resumes from the same frontier. An escalation is not a failure —
+the job stays runnable throughout.
+
+Every result records its fetcher, and a rendered result supersedes the HTTP one for the same URL;
+the reverse never happens. `GET /api/v1/jobs/{id}/results` reports the fetcher per row plus a
+per-fetcher summary, the CSV export carries the same column, and the deciding signal is written to
+the job event timeline so an escalation can be explained after the fact.
 
 ## Frontier, pacing, and lifecycle
 

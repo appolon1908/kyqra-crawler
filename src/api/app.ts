@@ -53,7 +53,7 @@ const publicPaths = ['/', '/healthz', '/health/live', '/api/v1/health', '/openap
 const csvEscape = (value: unknown): string => `"${String(value ?? '').replaceAll('"', '""')}"`;
 
 const resultsCsv = (rows: JobResultRow[]): string =>
-  `source_url,business_name,website,phone,email,address\n${rows
+  `source_url,business_name,website,phone,email,address,fetcher\n${rows
     .map((row) =>
       [
         row.data.source_url,
@@ -62,6 +62,7 @@ const resultsCsv = (rows: JobResultRow[]): string =>
         row.data.phone.join(';'),
         row.data.email.join(';'),
         row.data.address,
+        row.fetcher,
       ]
         .map(csvEscape)
         .join(','),
@@ -244,6 +245,9 @@ export const buildApi = async (runtime: Runtime): Promise<FastifyInstance> => {
       return {
         count: results.rows.length,
         correlation_id: results.correlationId,
+        // Which fetcher produced the answers, so a caller can tell a rendered result from
+        // a plain HTTP one without inspecting every row.
+        fetchers: results.fetchers,
         results: results.rows,
       };
     },

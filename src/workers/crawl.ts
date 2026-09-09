@@ -25,6 +25,7 @@ import {
 } from '../delivery/security.js';
 import { createPinnedCrawlProxy, type PinnedCrawlProxy } from '../delivery/pinned-proxy.js';
 import { extractGenericData } from '../extract/generic.js';
+import { detectRenderDependence } from '../extract/render-detection.js';
 import { canonicalizeUrl, urlHash } from '../frontier/canonicalize.js';
 import {
   HostRateLimitError,
@@ -43,7 +44,9 @@ import {
 } from '../queues/completion-callbacks.js';
 import { crawlQueueForKind } from '../queues/crawl.js';
 import {
+  countEscalatedFrontierRequests,
   deleteFrontier,
+  escalateFrontierRequest,
   markFrontierFailed,
   releaseExpiredFrontierClaims,
   releaseWorkerFrontierClaims,
@@ -51,12 +54,14 @@ import {
 import {
   countJobResults,
   getDomainPolicies,
+  recordEscalation,
   getInternalJobState,
   getInternalJobStatus,
   insertResult,
   markJobCompleted,
   markJobFailed,
   markJobRunning,
+  type ResultFetcher,
 } from '../storage/postgres/repository.js';
 import type { CrawlWorkerKind, Runtime } from '../types.js';
 import { watchJobCancellation, type CancellationWatch } from './cancellation.js';
@@ -70,6 +75,8 @@ interface PageRequestData {
 
 export interface CrawlJobOptions {
   workerId?: string;
+  /** Which worker is running this attempt. An `auto` job renders only on `browser`. */
+  kind?: CrawlWorkerKind;
   /** Aborts when the process is shutting down, so the job checkpoints instead of dying. */
   shutdownSignal?: AbortSignal;
   cancelPollIntervalMs?: number;
@@ -80,6 +87,18 @@ export class CrawlInterruptedError extends Error {
   constructor() {
     super('crawl_interrupted_by_shutdown');
     this.name = 'CrawlInterruptedError';
+  }
+}
+
+/**
+ * Raised when an `auto` job hands itself to the browser worker. Like an interruption this
+ * is not a failure: the job stays runnable, keeps its frontier, and resumes on the browser
+ * queue, so it must not be recorded as failed or have its frontier deleted.
+ */
+export class CrawlEscalatedError extends Error {
+  constructor(public readonly escalated: number) {
+    super('crawl_escalated_to_browser');
+    this.name = 'CrawlEscalatedError';
   }
 }
 
@@ -140,6 +159,18 @@ const transformDiscoveredRequest = (
   }
 };
 
+interface PageContext {
+  /** Which fetcher produced this HTML. */
+  fetcher: ResultFetcher;
+  /** True when an unsatisfying HTTP result may be handed to the browser worker. */
+  mayEscalate: boolean;
+  /** Called when a page is judged to need rendering. */
+  onEscalate: (
+    request: Request,
+    verdict: ReturnType<typeof detectRenderDependence>,
+  ) => Promise<void>;
+}
+
 const processPage = async (
   runtime: Runtime,
   job: Job<JobSpec>,
@@ -149,6 +180,7 @@ const processPage = async (
   progress: CrawlProgress,
   guardTarget: (rawUrl: string) => Promise<void>,
   cancelSignal: AbortSignal,
+  page: PageContext,
 ): Promise<void> => {
   // A page already fetched is still stored during a shutdown; discarding it here would
   // waste the request and make the resume fetch the same URL again.
@@ -162,6 +194,8 @@ const processPage = async (
   const sourceUrl = request.loadedUrl || request.url;
   const data = extractGenericData(html, sourceUrl);
   const provenance = Object.fromEntries(Object.keys(data).map((key) => [key, request.url]));
+  // The partial answer is still stored: it is the best result so far, and a later rendered
+  // fetch supersedes it in place rather than racing it.
   progress.records += await insertResult(
     runtime.db,
     jobId,
@@ -169,7 +203,12 @@ const processPage = async (
     urlHash(request.url),
     data,
     provenance,
+    page.fetcher,
   );
+  if (page.mayEscalate) {
+    const verdict = detectRenderDependence(html, data);
+    if (verdict.needsRendering) await page.onEscalate(request, verdict);
+  }
   await job.updateProgress(progress);
 };
 
@@ -269,7 +308,13 @@ export const processCrawlJob = async (
   const frontierAsQueue = frontier as unknown as RequestProvider;
   let pinnedProxy: PinnedCrawlProxy | undefined;
   let crawler: CheerioCrawler | PlaywrightCrawler | undefined;
-  const useBrowser = spec.browser === 'playwright';
+  // `auto` starts on the HTTP worker and is rendered only once escalated onto the browser
+  // queue, which is where the container has the shared memory a browser needs.
+  const kind: CrawlWorkerKind =
+    options.kind ?? (spec.browser === 'playwright' ? 'browser' : 'http');
+  const useBrowser = spec.browser === 'playwright' || kind === 'browser';
+  const mayEscalate = spec.browser === 'auto' && kind === 'http';
+  const escalated = new Set<string>();
 
   const onCancelled = (): void => {
     log('info', 'crawl_cancelled', { jobId, reason: cancellation.reason() ?? 'cancelled' });
@@ -310,6 +355,7 @@ export const processCrawlJob = async (
   };
 
   let interrupted = false;
+  let handedOff = false;
   try {
     await Promise.all(spec.startUrls.map((url) => guardTarget(url)));
     // Robots policies are cached before the frontier is seeded, so no disallowed URL is
@@ -343,6 +389,29 @@ export const processCrawlJob = async (
     await frontier.addRequestsBatched(
       permittedSeeds.map((url) => ({ url: canonicalizeUrl(url), userData: { depth: 0 } })),
     );
+
+    const onEscalate = async (
+      request: Request,
+      verdict: ReturnType<typeof detectRenderDependence>,
+    ): Promise<void> => {
+      if (!(await escalateFrontierRequest(runtime.db, jobId, request.uniqueKey))) return;
+      escalated.add(request.uniqueKey);
+      await recordEscalation(runtime.db, jobId, {
+        url: safeLogUrl(request.url),
+        reason: verdict.reason,
+        signals: { ...verdict.signals },
+      });
+      log('info', 'crawl_page_escalated', {
+        jobId,
+        url: safeLogUrl(request.url),
+        reason: verdict.reason,
+      });
+    };
+    const pageContext: PageContext = {
+      fetcher: useBrowser ? 'browser' : 'http',
+      mayEscalate,
+      onEscalate,
+    };
 
     const guardNavigation = async (request: Request): Promise<void> => {
       if (cancelSignal.aborted) throw new NonRetryableError('job_no_longer_running');
@@ -428,6 +497,7 @@ export const processCrawlJob = async (
               progress,
               guardTarget,
               cancelSignal,
+              pageContext,
             );
             if (depth < spec.maxDepth && spec.mode !== 'single') {
               await context.enqueueLinks({
@@ -500,6 +570,7 @@ export const processCrawlJob = async (
               progress,
               guardTarget,
               cancelSignal,
+              pageContext,
             );
             if (depth < spec.maxDepth && spec.mode !== 'single') {
               await context.enqueueLinks({
@@ -524,6 +595,16 @@ export const processCrawlJob = async (
       throw new CrawlInterruptedError();
     }
 
+    const owed = mayEscalate ? await countEscalatedFrontierRequests(runtime.db, jobId) : 0;
+    if (owed > 0) {
+      // The frontier and every result so far are kept; the browser pass resumes from them
+      // and refetches only the rows that owe a rendered answer.
+      handedOff = true;
+      await crawlQueueForKind(runtime, 'browser').add('crawl', spec, { jobId });
+      log('info', 'crawl_handed_to_browser', { jobId, escalated: owed });
+      throw new CrawlEscalatedError(owed);
+    }
+
     progress.records = await countJobResults(runtime.db, jobId);
     progress.processed = progress.records;
     await job.updateProgress(progress);
@@ -534,7 +615,7 @@ export const processCrawlJob = async (
     await queueCompletionCallbacks(runtime, jobId, spec, progress);
     return progress;
   } catch (error: unknown) {
-    if (error instanceof CrawlInterruptedError) throw error;
+    if (error instanceof CrawlInterruptedError || error instanceof CrawlEscalatedError) throw error;
     const configuredAttempts = Math.max(1, Number(job.opts.attempts ?? 1));
     const finalAttempt = job.attemptsMade + 1 >= configuredAttempts;
     if (finalAttempt || error instanceof NonRetryableError) {
@@ -546,7 +627,7 @@ export const processCrawlJob = async (
     options.shutdownSignal?.removeEventListener('abort', onShutdown);
     await cancellation.stop();
     await pinnedProxy?.close();
-    if (interrupted) {
+    if (interrupted || handedOff) {
       // Hand claims back so the retry, on this replica or another, resumes immediately
       // from the durable frontier instead of waiting out the visibility timeout.
       const released = await frontier.releaseOutstandingClaims().catch(() => 0);
@@ -589,7 +670,7 @@ export const createCrawlWorker = (
   const coordinator = shutdown ?? createShutdownCoordinator({ signals: [] });
   const worker = new Worker<JobSpec>(
     crawlQueueForKind(runtime, kind).name,
-    (job) => processCrawlJob(runtime, job, { workerId, shutdownSignal: coordinator.signal }),
+    (job) => processCrawlJob(runtime, job, { workerId, kind, shutdownSignal: coordinator.signal }),
     {
       connection: runtime.redisConnection,
       concurrency: jobConcurrency(),

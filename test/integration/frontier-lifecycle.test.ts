@@ -300,4 +300,134 @@ describe('durable frontier, cancellation, and resumable claims', () => {
     // Crawlee's default storage client writes ./storage when it owns the request queue.
     expect(fs.existsSync('storage/request_queues')).toBe(false);
   });
+
+  it('escalates a render-dependent page from the HTTP worker to the browser queue', async () => {
+    // A single-page application shell: the server ships an empty mount point and a script.
+    // Fetched over plain HTTP this yields no contact data, which `browser=auto` previously
+    // reported as a successful, empty crawl.
+    fixture.app.get('/spa', (_request, response) => {
+      response
+        .type('html')
+        .send(
+          '<!doctype html><html><head><title>Ridgeway App</title></head>' +
+            '<body><div id="root"></div><script src="/static/bundle.js"></script></body></html>',
+        );
+    });
+
+    const jobSpec = spec({
+      startUrls: [`${fixture.baseUrl}/spa`],
+      mode: 'single',
+      maxPages: 1,
+      maxDepth: 0,
+      browser: 'auto',
+    });
+    const jobId = await submitJob(jobSpec, 'adaptive-escalation');
+
+    const coordinator = createShutdownCoordinator({ signals: [] });
+    const worker = createCrawlWorker(runtime, 'http', coordinator);
+    await worker.waitUntilReady();
+    // `browser=auto` starts on the HTTP queue, exactly as it did before M5.
+    await crawlQueueForKind(runtime, 'http').add('crawl', jobSpec, { jobId });
+
+    const deadline = Date.now() + 30_000;
+    let escalations = 0;
+    while (Date.now() < deadline && escalations === 0) {
+      const events = await runtime.db.query<{ total: string }>(
+        "select count(*)::text as total from job_events where job_id=$1 and event_type='job.escalated'",
+        [jobId],
+      );
+      escalations = Number(events.rows[0]?.total ?? 0);
+      if (escalations === 0) await sleep(200);
+    }
+    expect(escalations).toBe(1);
+
+    // The evidence says which signal decided it, not merely that something happened.
+    const evidence = await runtime.db.query<{ payload: { reason: string; url: string } }>(
+      "select payload from job_events where job_id=$1 and event_type='job.escalated'",
+      [jobId],
+    );
+    expect(evidence.rows[0]?.payload.reason).toBe('empty_mount_point');
+    expect(evidence.rows[0]?.payload.url).toContain('/spa');
+
+    // The row owes a rendered fetch and is queued again rather than left handled.
+    const row = await runtime.db.query<{ state: string; fetcher: string }>(
+      'select state,fetcher from frontier where job_id=$1',
+      [jobId],
+    );
+    expect(row.rows[0]).toMatchObject({ state: 'pending', fetcher: 'browser' });
+
+    // The partial HTTP answer is kept and attributed, so nothing is lost in the handover.
+    const stored = await runtime.db.query<{ fetcher: string }>(
+      'select fetcher from results where job_id=$1',
+      [jobId],
+    );
+    expect(stored.rows[0]?.fetcher).toBe('http');
+
+    // The job moved to the browser queue and is still runnable — an escalation is not a
+    // failure, and must not be recorded as one.
+    const handedOff = await crawlQueueForKind(runtime, 'browser').getJob(jobId);
+    expect(handedOff).toBeDefined();
+    expect(await getInternalJobStatus(runtime.db, jobId)).toBe('running');
+
+    await coordinator.shutdown('test');
+    await crawlQueueForKind(runtime, 'browser')
+      .getJob(jobId)
+      .then((queued) => queued?.remove())
+      .catch(() => undefined);
+    await deleteFrontier(runtime.db, jobId);
+  }, 90_000);
+
+  it('leaves a server-rendered page on the HTTP fetcher', async () => {
+    fixture.app.get('/plain', (_request, response) => {
+      response
+        .type('html')
+        .send(
+          '<!doctype html><html><head><title>Ridgeway Plumbing</title>' +
+            '<meta property="og:site_name" content="Ridgeway Plumbing"></head><body>' +
+            '<h1>Ridgeway Plumbing</h1><p>Call +1 (555) 123-4567 or email hi@ridgeway.test.</p>' +
+            '<address>18 Mill Lane</address></body></html>',
+        );
+    });
+
+    const jobSpec = spec({
+      startUrls: [`${fixture.baseUrl}/plain`],
+      mode: 'single',
+      maxPages: 1,
+      maxDepth: 0,
+      browser: 'auto',
+    });
+    const jobId = await submitJob(jobSpec, 'adaptive-no-escalation');
+
+    const coordinator = createShutdownCoordinator({ signals: [] });
+    const worker = createCrawlWorker(runtime, 'http', coordinator);
+    await worker.waitUntilReady();
+    await crawlQueueForKind(runtime, 'http').add('crawl', jobSpec, { jobId });
+
+    const deadline = Date.now() + 30_000;
+    let status = await getInternalJobStatus(runtime.db, jobId);
+    while (Date.now() < deadline && status === 'queued') {
+      await sleep(200);
+      status = await getInternalJobStatus(runtime.db, jobId);
+    }
+    while (Date.now() < deadline && status === 'running') {
+      await sleep(200);
+      status = await getInternalJobStatus(runtime.db, jobId);
+    }
+    // A page that delivered its content completes on HTTP, with no browser involved.
+    expect(status).toBe('completed');
+
+    const escalated = await runtime.db.query<{ total: string }>(
+      "select count(*)::text as total from job_events where job_id=$1 and event_type='job.escalated'",
+      [jobId],
+    );
+    expect(escalated.rows[0]?.total).toBe('0');
+
+    const stored = await runtime.db.query<{ fetcher: string }>(
+      'select fetcher from results where job_id=$1',
+      [jobId],
+    );
+    expect(stored.rows[0]?.fetcher).toBe('http');
+
+    await coordinator.shutdown('test');
+  }, 90_000);
 });

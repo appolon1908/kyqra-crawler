@@ -137,6 +137,37 @@ export const markFrontierFailed = async (
   );
 };
 
+/**
+ * Mark a row as owing a rendered fetch and return it to the pending pool.
+ *
+ * The HTTP pass already handled this URL, but its answer was judged incomplete, so the row
+ * is reopened rather than left `handled`. `attempts` is deliberately not incremented: an
+ * escalation is a change of fetcher, not a retry of a failure.
+ */
+export const escalateFrontierRequest = async (
+  db: Pool,
+  jobId: string,
+  urlHash: string,
+): Promise<boolean> => {
+  const escalated = await db.query(
+    `update frontier
+     set state='pending', fetcher='browser', claimed_by=null, claimed_at=null,
+         scheduled_for=now(), updated_at=now()
+     where job_id=$1 and url_hash=$2 and fetcher<>'browser'`,
+    [jobId, urlHash],
+  );
+  return (escalated.rowCount ?? 0) > 0;
+};
+
+/** How many rows of this job are waiting on a rendered fetch. */
+export const countEscalatedFrontierRequests = async (db: Pool, jobId: string): Promise<number> => {
+  const counts = await db.query<{ total: string }>(
+    "select count(*)::text as total from frontier where job_id=$1 and fetcher='browser'",
+    [jobId],
+  );
+  return Number(counts.rows[0]?.total ?? 0);
+};
+
 /** Return a claim to the pending pool, optionally after a delay, and count the attempt. */
 export const reclaimFrontierRequest = async (
   db: Pool,
