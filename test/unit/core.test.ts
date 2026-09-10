@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 
 import { describe, expect, it } from 'vitest';
 
@@ -182,6 +183,87 @@ describe('crawler core behavior', () => {
     await new Promise<void>((resolve, reject) =>
       upstream.close((error) => (error ? reject(error) : resolve())),
     );
+  });
+
+  it('tunnels CONNECT requests to the exact address returned by the target policy', async () => {
+    const received: string[] = [];
+    const upstream = net.createServer((socket) => {
+      socket.once('data', (chunk: Buffer) => {
+        received.push(chunk.toString('utf8'));
+        socket.end('tunnelled');
+      });
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    const upstreamAddress = upstream.address();
+    expect(upstreamAddress && typeof upstreamAddress !== 'string').toBe(true);
+    if (!upstreamAddress || typeof upstreamAddress === 'string')
+      throw new Error('fixture_bind_failed');
+    const resolvedTargets: string[] = [];
+    const proxy = await createPinnedCrawlProxy(async (rawUrl) => {
+      resolvedTargets.push(rawUrl);
+      return {
+        hostname: new URL(rawUrl).hostname,
+        addresses: [{ address: '127.0.0.1', family: 4 }],
+      };
+    });
+    const proxyAddress = new URL(proxy.url);
+    const body = await new Promise<string>((resolve, reject) => {
+      const request = http.request({
+        method: 'CONNECT',
+        hostname: proxyAddress.hostname,
+        port: proxyAddress.port,
+        path: `dns-must-not-resolve.invalid:${upstreamAddress.port}`,
+      });
+      request.once('connect', (response, socket) => {
+        if (response.statusCode !== 200) {
+          socket.destroy();
+          reject(new Error(`unexpected_connect_status_${response.statusCode ?? 0}`));
+          return;
+        }
+        let value = '';
+        socket.setEncoding('utf8');
+        socket.on('data', (chunk: string) => (value += chunk));
+        socket.on('end', () => resolve(value));
+        socket.write('ping');
+      });
+      request.once('error', reject);
+      request.end();
+    });
+    expect(body).toBe('tunnelled');
+    expect(received).toEqual(['ping']);
+    expect(resolvedTargets).toEqual([
+      `https://dns-must-not-resolve.invalid:${upstreamAddress.port}/`,
+    ]);
+    await proxy.close();
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+
+  it('refuses CONNECT tunnels that the target policy denies', async () => {
+    const proxy = await createPinnedCrawlProxy(async () => {
+      throw new Error('crawl_target_denied');
+    });
+    const proxyAddress = new URL(proxy.url);
+    const request = [
+      'CONNECT blocked.invalid:443 HTTP/1.1',
+      'Host: blocked.invalid:443',
+      '',
+      '',
+    ].join('\r\n');
+    const reply = await new Promise<string>((resolve, reject) => {
+      const socket = net.createConnection(
+        { host: proxyAddress.hostname, port: Number(proxyAddress.port) },
+        () => socket.write(request),
+      );
+      let value = '';
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk: string) => (value += chunk));
+      socket.once('close', () => resolve(value));
+      socket.once('error', reject);
+    });
+    expect(reply).toContain('403 Forbidden');
+    await proxy.close();
   });
 
   it('pins the documented internal callback exception without making a request', async () => {
