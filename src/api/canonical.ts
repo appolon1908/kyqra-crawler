@@ -14,6 +14,7 @@ import {
   type JobStatusRow,
 } from '../storage/postgres/repository.js';
 import { crawlQueueForSpec, findCrawlJob, removeCrawlJob } from '../queues/crawl.js';
+import { publishJobCancellation } from '../workers/cancellation.js';
 import {
   queueCompletionCallbacks,
   storedCompletionProgress,
@@ -131,6 +132,9 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
         );
         if (cancelled) {
           await removeCrawlJob(runtime, request.params.id).catch(() => undefined);
+          // Reach a crawl that is already running: the queue entry is gone, but a worker
+          // holding the job only stops fetching once it sees the cancellation.
+          await publishJobCancellation(runtime, request.params.id).catch(() => undefined);
         }
         return cancelled
           ? {
@@ -198,7 +202,7 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
                 },
               };
             }
-            await removeCrawlJob(runtime, job.id);
+            await removeCrawlJob(runtime, job.id, { waitMs: 20_000 });
           }
           try {
             await crawlQueueForSpec(runtime, payload).add('crawl', payload, { jobId: job.id });
@@ -235,7 +239,7 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
           };
         }
         try {
-          await removeCrawlJob(runtime, job.id);
+          await removeCrawlJob(runtime, job.id, { waitMs: 20_000 });
           await crawlQueueForSpec(runtime, payload).add('crawl', payload, { jobId: job.id });
         } catch (error: unknown) {
           await markJobFailed(runtime.db, job.id, 'queue_reconcile_failed');

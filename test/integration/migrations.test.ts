@@ -1,9 +1,18 @@
+import fs from 'node:fs';
+
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { buildApi } from '../../src/api/app.js';
 import { migrateDatabase } from '../../src/storage/postgres/migrate.js';
+
+/**
+ * How many migrations sit above `0001_init`, which is the last point at which `jobs` still
+ * has its original `payload` column.
+ */
+const migrationsAboveBaseline = (): number =>
+  fs.readdirSync('migrations').filter((name) => name.endsWith('.sql')).length - 1;
 import { markJobRunning } from '../../src/storage/postgres/repository.js';
 import type { Runtime } from '../../src/types.js';
 
@@ -204,7 +213,9 @@ describe('PostgreSQL migrations', () => {
     await db.query('delete from job_requests where job_id=$1', [automaticRetryJobId]);
     await db.query('delete from jobs where id=$1', [automaticRetryJobId]);
 
-    await migrateDatabase(databaseUrl, 'down', 2);
+    // Step back to the 0001 baseline, where jobs still has `payload`. Derived rather than
+    // hardcoded: every migration added since has silently invalidated a fixed count.
+    await migrateDatabase(databaseUrl, 'down', migrationsAboveBaseline());
     const legacyJobId = '00000000-0000-4000-8000-000000000002';
     await db.query("insert into jobs(id,status,payload) values($1,'queued',$2)", [
       legacyJobId,

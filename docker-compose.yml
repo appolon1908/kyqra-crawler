@@ -14,6 +14,9 @@ x-app: &app
   networks: [backend]
   restart: unless-stopped
   init: true
+  # SIGTERM starts the graceful stop: workers stop claiming, let in-flight work settle,
+  # and release their frontier claims. Allow more than SHUTDOWN_GRACE_SECONDS for that.
+  stop_grace_period: 30s
   user: pwuser
   read_only: true
   cap_drop: [ALL]
@@ -52,7 +55,7 @@ services:
     cpus: 2
     healthcheck:
       {
-        test: ['CMD', 'curl', '-fsS', 'http://localhost:3000/health'],
+        test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3001/readyz'],
         interval: 30s,
         timeout: 5s,
         retries: 3,

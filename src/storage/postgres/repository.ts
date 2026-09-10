@@ -41,6 +41,8 @@ export interface InternalJobState {
 export interface JobResultRow {
   data: ExtractionData;
   provenance: Record<string, string>;
+  /** Which fetcher produced this row: `http`, or `browser` after an escalation. */
+  fetcher: string;
 }
 
 export interface CommandRequestRow {
@@ -70,10 +72,9 @@ export const getInternalJobState = async (
   db: Pool,
   jobId: string,
 ): Promise<InternalJobState | null> => {
-  const result = await db.query<InternalJobState>(
-    'select status,progress from jobs where id=$1',
-    [jobId],
-  );
+  const result = await db.query<InternalJobState>('select status,progress from jobs where id=$1', [
+    jobId,
+  ]);
   return result.rows[0] ?? null;
 };
 
@@ -101,6 +102,20 @@ export const markJobRunning = async (db: Pool, jobId: string): Promise<boolean> 
   return (result.rowCount ?? 0) === 1;
 };
 
+export type ResultFetcher = 'http' | 'browser';
+
+/** How many of a job's results each fetcher produced. */
+export interface FetcherSummary {
+  http: number;
+  browser: number;
+}
+
+/**
+ * Store one page's extraction. A rendered result supersedes an earlier HTTP one for the
+ * same URL: escalation exists precisely because the HTTP answer was wrong, so the browser
+ * pass must overwrite it rather than be discarded by the uniqueness constraint. The
+ * reverse never happens — an HTTP result does not overwrite a rendered one.
+ */
 export const insertResult = async (
   db: Pool,
   jobId: string,
@@ -108,17 +123,55 @@ export const insertResult = async (
   urlHash: string,
   data: ExtractionData,
   provenance: Record<string, string>,
+  fetcher: ResultFetcher = 'http',
 ): Promise<number> => {
   const result = await db.query(
     `with runnable as (
        select id from jobs where id=$1 and status='running' for update
      )
-     insert into results(job_id,url,url_hash,data,provenance)
-     select id,$2,$3,$4,$5 from runnable
-     on conflict do nothing returning id`,
-    [jobId, url, urlHash, data, provenance],
+     insert into results(job_id,url,url_hash,data,provenance,fetcher)
+     select id,$2,$3,$4,$5,$6 from runnable
+     on conflict (job_id,url_hash) do update
+       set data=excluded.data, provenance=excluded.provenance, fetcher=excluded.fetcher
+       where results.fetcher='http' and excluded.fetcher='browser'
+     returning id`,
+    [jobId, url, urlHash, data, provenance, fetcher],
   );
   return result.rowCount ?? 0;
+};
+
+export interface EscalationEvidence {
+  url: string;
+  reason: string;
+  signals: Record<string, unknown>;
+}
+
+/**
+ * Record why a page was judged to need rendering. The evidence lives in `job_events` so an
+ * escalation is answerable after the fact from the same timeline the caller already reads.
+ */
+export const recordEscalation = async (
+  db: Pool,
+  jobId: string,
+  evidence: EscalationEvidence,
+): Promise<void> => {
+  await db.query(
+    `insert into job_events(job_id,tenant_id,event_type,status,payload)
+     select id, tenant_id, 'job.escalated', 'running', $2::jsonb from jobs where id=$1`,
+    [jobId, JSON.stringify(evidence)],
+  );
+};
+
+/** Count of results produced by each fetcher, for progress and acceptance evidence. */
+export const countResultsByFetcher = async (
+  db: Pool,
+  jobId: string,
+): Promise<Record<string, number>> => {
+  const counts = await db.query<{ fetcher: string; total: string }>(
+    'select fetcher, count(*)::text as total from results where job_id=$1 group by fetcher',
+    [jobId],
+  );
+  return Object.fromEntries(counts.rows.map((row) => [row.fetcher, Number(row.total)]));
 };
 
 export const markJobCompleted = async (
@@ -260,7 +313,7 @@ export const getJobResults = async (
   db: Pool,
   jobId: string,
   tenantId: string,
-): Promise<{ correlationId: string; rows: JobResultRow[] } | null> => {
+): Promise<{ correlationId: string; rows: JobResultRow[]; fetchers: FetcherSummary } | null> => {
   const metadata = await db.query<{ correlation_id: string }>(
     'select correlation_id from job_requests where job_id=$1 and tenant_id=$2',
     [jobId, tenantId],
@@ -268,10 +321,18 @@ export const getJobResults = async (
   const correlationId = metadata.rows[0]?.correlation_id;
   if (!correlationId) return null;
   const results = await db.query<JobResultRow>(
-    'select r.data,r.provenance from results r join job_requests m on m.job_id=r.job_id where r.job_id=$1 and m.tenant_id=$2 order by r.id',
+    'select r.data,r.provenance,r.fetcher from results r join job_requests m on m.job_id=r.job_id where r.job_id=$1 and m.tenant_id=$2 order by r.id',
     [jobId, tenantId],
   );
-  return { correlationId, rows: results.rows };
+  const fetchers = results.rows.reduce<FetcherSummary>(
+    (totals, row) => ({
+      ...totals,
+      [row.fetcher === 'browser' ? 'browser' : 'http']:
+        totals[row.fetcher === 'browser' ? 'browser' : 'http'] + 1,
+    }),
+    { http: 0, browser: 0 },
+  );
+  return { correlationId, rows: results.rows, fetchers };
 };
 
 export const ownsJob = async (db: Pool, jobId: string, tenantId: string): Promise<boolean> => {
@@ -416,13 +477,7 @@ export const beginCommand = async (
        from command_requests
       where tenant_id=$1 and caller_id=$2 and action=$3 and api_version='api/v1'
         and resource=$4 and idempotency_key=$5`,
-    [
-      values.tenantId,
-      values.callerId,
-      values.action,
-      values.resource,
-      values.idempotencyKey,
-    ],
+    [values.tenantId, values.callerId, values.action, values.resource, values.idempotencyKey],
   );
   const existing = prior.rows[0];
   if (!existing) throw new Error('idempotency_readback_failed');
@@ -444,4 +499,28 @@ export const completeCommand = async (
     [commandId, status, responseCode, response],
   );
   if ((result.rowCount ?? 0) !== 1) throw new Error('command_completion_conflict');
+};
+
+export interface DomainPolicy {
+  host: string;
+  crawlDelayMs: number | null;
+  maxRps: number | null;
+}
+
+/**
+ * Operator-approved crawl policy for hosts, from the `domains` table. These bound the
+ * per-host rate limiter alongside anything robots.txt declares.
+ */
+export const getDomainPolicies = async (db: Pool, hosts: string[]): Promise<DomainPolicy[]> => {
+  if (hosts.length === 0) return [];
+  const policies = await db.query<{
+    host: string;
+    crawl_delay_ms: number | null;
+    max_rps: string | null;
+  }>('select host,crawl_delay_ms,max_rps from domains where host = any($1::text[])', [hosts]);
+  return policies.rows.map((row) => ({
+    host: row.host,
+    crawlDelayMs: row.crawl_delay_ms,
+    maxRps: row.max_rps === null ? null : Number(row.max_rps),
+  }));
 };

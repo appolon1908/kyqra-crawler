@@ -1,18 +1,82 @@
 {
   "public": [
-    { "method": "GET", "path": "/", "control": "basic-auth-ui" },
-    { "method": "GET", "path": "/healthz", "control": "public-safe-health" },
-    { "method": "GET", "path": "/readyz", "control": "public-safe-readiness" }
+    {
+      "method": "GET",
+      "path": "/",
+      "control": "basic-auth-ui"
+    },
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "control": "public-safe-health"
+    }
   ],
   "private_mtls_only": [
-    { "method": "GET", "path": "/health" },
-    { "method": "GET", "path": "/api/v1/health" },
-    { "method": "POST", "path": "/api/v1/jobs" },
-    { "method": "GET", "path": "/api/v1/jobs/:id" },
-    { "method": "GET", "path": "/api/v1/jobs/:id/results" },
-    { "method": "POST", "path": "/api/v1/jobs/:id/cancel" },
-    { "method": "POST", "path": "/api/v1/jobs/:id/retry" },
-    { "method": "GET", "path": "/api/v1/stats" },
-    { "method": "POST", "path": "/api/v1/webhooks/test" }
+    {
+      "method": "GET",
+      "path": "/health"
+    },
+    {
+      "method": "GET",
+      "path": "/readyz"
+    },
+    {
+      "method": "GET",
+      "path": "/health/ready"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/health"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/jobs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/:id"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/jobs/:id/results"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/jobs/:id/cancel"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/jobs/:id/retry"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/stats"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/webhooks/test"
+    }
+  ],
+  "internal_only": [
+    {
+      "method": "GET",
+      "path": "/healthz",
+      "control": "internal-listener"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "control": "internal-listener-deep-probe"
+    },
+    {
+      "method": "GET",
+      "path": "/readyz",
+      "control": "internal-listener-deep-probe"
+    },
+    {
+      "method": "GET",
+      "path": "/health/ready",
+      "control": "internal-listener-deep-probe"
+    }
   ]
 }
