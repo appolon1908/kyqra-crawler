@@ -97,7 +97,7 @@ export const createCallbackWorker = (
   const worker = new Worker<CallbackJobData>(
     'callbacks',
     async (job) => {
-      const eventId = String(job.id || crypto.randomUUID());
+      const eventId = job.data.eventId || String(job.id || crypto.randomUUID());
       await deliverCallback(job.data, eventId, credentials);
     },
     { connection: runtime.redisConnection, concurrency: 3 },
