@@ -113,9 +113,9 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
   });
 
   app.get('/api/v1/sources', async (request) => ({
-    items: (
-      await listSourceProfiles(runtime.db, request.servicePrincipal.tenant_id)
-    ).map(sourceView),
+    items: (await listSourceProfiles(runtime.db, request.servicePrincipal.tenant_id)).map(
+      sourceView,
+    ),
   }));
 
   app.get<{ Params: IdParams }>('/api/v1/sources/:id', async (request, reply) => {
