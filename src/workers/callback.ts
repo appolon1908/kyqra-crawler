@@ -53,7 +53,11 @@ export const deliverCallback = async (
         authorization: `Bearer ${credentials.middlewareApiKey}`,
         'idempotency-key': canonicalPayloadValue(payload, 'idempotency_key', eventId),
         'x-codestra-event-id': eventId,
-        'x-codestra-event-type': canonicalPayloadValue(payload, 'event_type', data.event || 'codestra.crawler.job.completed'),
+        'x-codestra-event-type': canonicalPayloadValue(
+          payload,
+          'event_type',
+          data.event || 'codestra.crawler.job.completed',
+        ),
         'x-codestra-source': sourceClientId,
         'x-codestra-tenant-id': canonicalPayloadValue(payload, 'tenant_id', 'unknown'),
         'x-codestra-timestamp': timestamp,
