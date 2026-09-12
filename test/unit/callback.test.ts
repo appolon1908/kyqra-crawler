@@ -71,7 +71,7 @@ describe('signed private-gateway callback delivery', () => {
     agent.disableNetConnect();
     const pool = agent.get('https://gateway.example.test');
     let receivedHeaders: Record<string, string> = {};
-    pool.intercept({ path: '/v1/webhooks/crawler/kyqra', method: 'POST' }).reply((options) => {
+    pool.intercept({ path: '/api/v1/crawler/entities/batch', method: 'POST' }).reply((options) => {
       receivedHeaders = Object.fromEntries(
         Object.entries(options.headers || {}).map(([key, value]) => [key, String(value)]),
       );
@@ -101,7 +101,7 @@ describe('signed private-gateway callback delivery', () => {
     await deliverCallback(
       {
         jobId: 'job-1',
-        url: 'https://gateway.example.test/v1/webhooks/crawler/kyqra',
+        url: 'https://gateway.example.test/api/v1/crawler/entities/batch',
         payload,
         eventId: payload.event_id,
         event: payload.event_type,
