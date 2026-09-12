@@ -15,9 +15,12 @@ export const jobSpecSchema = z.object({
 
 export const sourceProfileSchema = z.object({
   name: z.string().min(1).max(256),
-  baseUrl: z.string().url().refine((value) => value.startsWith('https://'), {
-    message: 'baseUrl must use HTTPS',
-  }),
+  baseUrl: z
+    .string()
+    .url()
+    .refine((value) => value.startsWith('https://'), {
+      message: 'baseUrl must use HTTPS',
+    }),
   enabled: z.boolean().default(true),
   crawl: z
     .object({
