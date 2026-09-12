@@ -65,4 +65,57 @@ describe('signed private-gateway callback delivery', () => {
       ),
     ).rejects.toThrow('callback 503');
   });
+  
+  it('uses the canonical Codestra headers for Middleware events', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    const pool = agent.get('https://gateway.example.test');
+    let receivedHeaders: Record<string, string> = {};
+    pool.intercept({ path: '/v1/webhooks/crawler/kyqra', method: 'POST' }).reply((options) => {
+      receivedHeaders = Object.fromEntries(
+        Object.entries(options.headers || {}).map(([key, value]) => [key, String(value)]),
+      );
+      return { statusCode: 204, data: '' };
+    });
+    const payload = {
+      event_id: '11111111-1111-4111-8111-111111111111',
+      event_type: 'codestra.crawler.job.completed',
+      event_version: '1.0',
+      occurred_at: '2026-09-12T11:00:00.000Z',
+      received_at: '2026-09-12T11:00:00.000Z',
+      source: 'kyqra-gateway',
+      tenant_id: 'tenant-1',
+      customer_id: null,
+      correlation_id: 'corr-1',
+      causation_id: 'job-1',
+      idempotency_key: '11111111-1111-4111-8111-111111111111',
+      payload: {
+        job_id: '22222222-2222-4222-8222-222222222222',
+        status: 'completed',
+        error: null,
+        progress: { processed: 1, records: 1, failed: 0 },
+        results: [],
+      },
+      metadata: { origin_service: 'kyqra-crawler' },
+    };
+    await deliverCallback(
+      {
+        jobId: 'job-1',
+        url: 'https://gateway.example.test/v1/webhooks/crawler/kyqra',
+        payload,
+        eventId: payload.event_id,
+        event: payload.event_type,
+        signatureMode: 'codestra-v1',
+        sourceClientId: 'kyqra-gateway',
+      },
+      payload.event_id,
+      { middlewareApiKey: 'm'.repeat(32), webhookSecret: 'w'.repeat(32) },
+      async () => agent,
+    );
+    expect(receivedHeaders['x-codestra-source']).toBe('kyqra-gateway');
+    expect(receivedHeaders['x-codestra-event-type']).toBe('codestra.crawler.job.completed');
+    expect(receivedHeaders['x-codestra-event-id']).toBe(payload.event_id);
+    expect(receivedHeaders['idempotency-key']).toBe(payload.idempotency_key);
+  });
+
 });

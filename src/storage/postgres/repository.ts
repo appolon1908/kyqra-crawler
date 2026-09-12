@@ -12,6 +12,18 @@ export interface CallbackResultRow {
   id: string;
   data: ExtractionData;
   provenance: Record<string, string>;
+  fetcher: ResultFetcher;
+}
+
+export interface SourceProfileRow {
+  id: string;
+  tenant_id: string;
+  name: string;
+  base_url: string;
+  enabled: boolean;
+  profile: Record<string, unknown>;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface IdempotentJob {
@@ -61,6 +73,7 @@ export const checkPostgresReady = async (db: Pool): Promise<void> => {
   await db.query('select tenant_id,event_type,status from job_events limit 0');
   await db.query('select tenant_id,caller_id,enqueue_outcome from job_requests limit 0');
   await db.query('select tenant_id,caller_id,action,status from command_requests limit 0');
+  await db.query('select tenant_id,base_url from source_profiles limit 0');
 };
 
 export const getInternalJobStatus = async (db: Pool, jobId: string): Promise<string | null> => {
@@ -196,7 +209,7 @@ export const listResultsForCallbacks = async (
   jobId: string,
 ): Promise<CallbackResultRow[]> => {
   const result = await db.query<CallbackResultRow>(
-    'select id::text,data,provenance from results where job_id=$1 order by id',
+    'select id::text,data,provenance,fetcher from results where job_id=$1 order by id',
     [jobId],
   );
   return result.rows;
@@ -511,6 +524,82 @@ export interface DomainPolicy {
  * Operator-approved crawl policy for hosts, from the `domains` table. These bound the
  * per-host rate limiter alongside anything robots.txt declares.
  */
+export const createSourceProfile = async (
+  db: Pool,
+  values: {
+    id: string;
+    tenantId: string;
+    profile: {
+      name: string;
+      baseUrl: string;
+      enabled: boolean;
+      [key: string]: unknown;
+    };
+  },
+): Promise<SourceProfileRow> => {
+  const result = await db.query<SourceProfileRow>(
+    `insert into source_profiles(id,tenant_id,name,base_url,enabled,profile)
+     values($1,$2,$3,$4,$5,$6)
+     returning id,tenant_id,name,base_url,enabled,profile,created_at,updated_at`,
+    [
+      values.id,
+      values.tenantId,
+      values.profile.name,
+      values.profile.baseUrl,
+      values.profile.enabled,
+      values.profile,
+    ],
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error('source_profile_not_created');
+  return row;
+};
+
+export const listSourceProfiles = async (
+  db: Pool,
+  tenantId: string,
+  limit = 200,
+): Promise<SourceProfileRow[]> => {
+  const result = await db.query<SourceProfileRow>(
+    `select id,tenant_id,name,base_url,enabled,profile,created_at,updated_at
+       from source_profiles
+      where tenant_id=$1
+      order by created_at desc
+      limit $2`,
+    [tenantId, limit],
+  );
+  return result.rows;
+};
+
+export const getSourceProfile = async (
+  db: Pool,
+  sourceId: string,
+  tenantId: string,
+): Promise<SourceProfileRow | null> => {
+  const result = await db.query<SourceProfileRow>(
+    `select id,tenant_id,name,base_url,enabled,profile,created_at,updated_at
+       from source_profiles
+      where id=$1 and tenant_id=$2`,
+    [sourceId, tenantId],
+  );
+  return result.rows[0] ?? null;
+};
+
+export const disableSourceProfile = async (
+  db: Pool,
+  sourceId: string,
+  tenantId: string,
+): Promise<boolean> => {
+  const result = await db.query(
+    `update source_profiles
+        set enabled=false,updated_at=now()
+      where id=$1 and tenant_id=$2 and enabled=true
+      returning id`,
+    [sourceId, tenantId],
+  );
+  return (result.rowCount ?? 0) === 1;
+};
+
 export const getDomainPolicies = async (db: Pool, hosts: string[]): Promise<DomainPolicy[]> => {
   if (hosts.length === 0) return [];
   const policies = await db.query<{

@@ -18,6 +18,11 @@ export interface CallbackJobData {
   url: string;
   payload?: Record<string, unknown>;
   event?: string;
+  /** Stable event id persisted in the BullMQ job payload for replay-safe delivery. */
+  eventId?: string;
+  /** The legacy Kyqra signature is retained only for user callbacks. */
+  signatureMode?: 'legacy-kyqra-v1' | 'codestra-v1';
+  sourceClientId?: string;
 }
 
 export type CrawlWorkerKind = 'http' | 'browser';

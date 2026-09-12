@@ -13,6 +13,15 @@ interface CallbackCredentials {
   webhookSecret: string;
 }
 
+const canonicalPayloadValue = (
+  payload: Record<string, unknown>,
+  key: string,
+  fallback: string,
+): string => {
+  const value = payload[key];
+  return typeof value === 'string' && value.length > 0 ? value : fallback;
+};
+
 export const deliverCallback = async (
   data: CallbackJobData,
   eventId: string,
@@ -22,18 +31,44 @@ export const deliverCallback = async (
   const body = JSON.stringify(data.payload || {});
   const timestamp = String(Math.floor(Date.now() / 1000));
   const target = new URL(data.url);
+  const canonicalMode = data.signatureMode === 'codestra-v1';
+  const sourceClientId = data.sourceClientId || 'kyqra-gateway';
+  const source = canonicalMode ? sourceClientId : 'kyqra';
   const canonical = callbackSignatureInput(
     'POST',
     target.pathname,
     timestamp,
     eventId,
-    'kyqra',
+    source,
     body,
   );
   const signature = crypto
     .createHmac('sha256', credentials.webhookSecret)
     .update(canonical)
     .digest('hex');
+  const payload = data.payload || {};
+  const headers: Record<string, string> = canonicalMode
+    ? {
+        'content-type': 'application/json',
+        authorization: `Bearer ${credentials.middlewareApiKey}`,
+        'idempotency-key': canonicalPayloadValue(payload, 'idempotency_key', eventId),
+        'x-codestra-event-id': eventId,
+        'x-codestra-event-type': canonicalPayloadValue(payload, 'event_type', data.event || 'codestra.crawler.job.completed'),
+        'x-codestra-source': sourceClientId,
+        'x-codestra-tenant-id': canonicalPayloadValue(payload, 'tenant_id', 'unknown'),
+        'x-codestra-timestamp': timestamp,
+        'x-codestra-signature': `sha256=${signature}`,
+        'x-correlation-id': canonicalPayloadValue(payload, 'correlation_id', eventId),
+      }
+    : {
+        'content-type': 'application/json',
+        authorization: `Bearer ${credentials.middlewareApiKey}`,
+        'x-source-system': 'kyqra',
+        'x-kyqra-signature-version': 'v1',
+        'x-kyqra-timestamp': timestamp,
+        'x-kyqra-event-id': eventId,
+        'x-kyqra-signature': `sha256=${signature}`,
+      };
   const dispatcher = await dispatcherFactory(data.url);
   try {
     const response = await request(data.url, {
@@ -42,15 +77,7 @@ export const deliverCallback = async (
       headersTimeout: 15000,
       bodyTimeout: 15000,
       signal: AbortSignal.timeout(30000),
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${credentials.middlewareApiKey}`,
-        'x-source-system': 'kyqra',
-        'x-kyqra-signature-version': 'v1',
-        'x-kyqra-timestamp': timestamp,
-        'x-kyqra-event-id': eventId,
-        'x-kyqra-signature': `sha256=${signature}`,
-      },
+      headers,
       body,
     });
     await response.body.dump();

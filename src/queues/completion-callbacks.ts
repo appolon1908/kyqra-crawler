@@ -1,7 +1,10 @@
+import crypto from 'node:crypto';
+
 import type { JobSpec } from '../config/schema.js';
 import { isCallbackAllowed } from '../delivery/security.js';
 import { getJobMetadata, listResultsForCallbacks } from '../storage/postgres/repository.js';
 import type { CallbackJobData, Runtime } from '../types.js';
+import { buildCrawlerCompletionEvent } from '../integration/crawler-events.js';
 
 export interface CompletionProgress {
   processed: number;
@@ -42,43 +45,56 @@ export const queueCompletionCallbacks = async (
   const metadata = await getJobMetadata(runtime.db, jobId);
   if (middlewareBaseUrl) {
     const rows = await listResultsForCallbacks(runtime.db, jobId);
-    for (const row of rows) {
-      await enqueueOrReviveCallback(
-        runtime,
-        'result',
-        {
-          jobId,
-          url: `${middlewareBaseUrl}/api/v1/kyqra/results`,
-          payload: {
-            job_id: jobId,
-            tenant_id: metadata?.tenant_id ?? null,
-            correlation_id: metadata?.correlation_id ?? null,
-            record_id: row.id,
-            ...row.data,
-            category: row.data.category ?? null,
-            confidence: row.data.confidence ?? null,
-            provenance: row.provenance,
-          },
-        },
-        `kyqra-result-${jobId}-${row.id}`,
-      );
-    }
+    const eventId = crypto.randomUUID();
+    const envelope = buildCrawlerCompletionEvent({
+      eventId,
+      jobId,
+      metadata,
+      progress,
+      rows,
+    });
+    const configuredPath = (process.env.KYQRA_MIDDLEWARE_WEBHOOK_PATH || '/v1/webhooks/crawler/kyqra').trim();
+    const path = configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
     await enqueueOrReviveCallback(
       runtime,
-      'progress',
+      'job.completed',
       {
         jobId,
-        url: `${middlewareBaseUrl}/api/v1/kyqra/progress`,
-        payload: {
-          job_id: jobId,
-          tenant_id: metadata?.tenant_id ?? null,
-          correlation_id: metadata?.correlation_id ?? null,
-          status: 'completed',
-          ...progress,
-        },
+        url: `${middlewareBaseUrl}${path}`,
+        payload: envelope as unknown as Record<string, unknown>,
+        event: envelope.event_type,
+        eventId,
+        signatureMode: 'codestra-v1',
+        sourceClientId: 'kyqra-gateway',
       },
-      `kyqra-progress-${jobId}`,
+      `kyqra-event-${jobId}-completed`,
     );
+
+    // The old per-row endpoints remain available only as an explicit compatibility escape
+    // hatch; the canonical integration is one signed, replay-safe event.
+    if (process.env.KYQRA_LEGACY_CALLBACKS_ENABLED === 'true') {
+      for (const row of rows) {
+        await enqueueOrReviveCallback(
+          runtime,
+          'legacy-result',
+          {
+            jobId,
+            url: `${middlewareBaseUrl}/api/v1/kyqra/results`,
+            payload: {
+              job_id: jobId,
+              tenant_id: metadata?.tenant_id ?? null,
+              correlation_id: metadata?.correlation_id ?? null,
+              record_id: row.id,
+              ...row.data,
+              category: row.data.category ?? null,
+              confidence: row.data.confidence ?? null,
+              provenance: row.provenance,
+            },
+          },
+          `kyqra-legacy-result-${jobId}-${row.id}`,
+        );
+      }
+    }
   }
   if (spec.callbackUrl && isCallbackAllowed(spec.callbackUrl)) {
     await enqueueOrReviveCallback(
