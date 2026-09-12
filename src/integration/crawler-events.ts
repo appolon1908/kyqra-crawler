@@ -55,6 +55,9 @@ export const buildCrawlerCompletionEvent = (values: {
   progress: CrawlerEventProgress;
   rows: CallbackResultRow[];
 }): CrawlerEventEnvelope => {
+  const tenantId = values.metadata?.tenant_id;
+  const correlationId = values.metadata?.correlation_id;
+  if (!tenantId || !correlationId) throw new Error('job_metadata_required_for_delivery');
   const eventId = values.eventId ?? crypto.randomUUID();
   const timestamp = new Date().toISOString();
   return {
@@ -64,9 +67,9 @@ export const buildCrawlerCompletionEvent = (values: {
     occurred_at: timestamp,
     received_at: timestamp,
     source: 'kyqra-gateway',
-    tenant_id: values.metadata?.tenant_id ?? 'unknown',
+    tenant_id: tenantId,
     customer_id: null,
-    correlation_id: values.metadata?.correlation_id ?? eventId,
+    correlation_id: correlationId,
     causation_id: values.jobId,
     idempotency_key: eventId,
     payload: {
