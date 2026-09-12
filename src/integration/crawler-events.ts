@@ -80,7 +80,7 @@ export const buildCrawlerCompletionEvent = (values: {
       results: values.rows.map((row) => {
         const data = asRecord(row.data);
         const sourceUrl =
-          typeof data.source_url === 'string' ? data.source_url : row.provenance.source_url ?? '';
+          typeof data.source_url === 'string' ? data.source_url : (row.provenance.source_url ?? '');
         return {
           record_id: row.id,
           source_url: sourceUrl,
