@@ -29,20 +29,34 @@ export const sourceProfileSchema = z.object({
       respectRobotsTxt: z.literal(true).default(true),
       browserMode: z.enum(['auto', 'http', 'playwright']).default('auto'),
     })
-    .default({}),
+    .default({
+      mode: 'domain',
+      maxPages: 1000,
+      maxDepth: 6,
+      requestsPerSecond: 1,
+      respectRobotsTxt: true,
+      browserMode: 'auto',
+    }),
   discovery: z
     .object({
       sitemap: z.boolean().default(true),
       rss: z.boolean().default(true),
       pagination: z.boolean().default(true),
     })
-    .default({}),
+    .default({
+      sitemap: true,
+      rss: true,
+      pagination: true,
+    }),
   extraction: z
     .object({
       schema: z.string().min(1).max(128).default('business_profile'),
       schemaVersion: z.number().int().min(1).default(1),
     })
-    .default({}),
+    .default({
+      schema: 'business_profile',
+      schemaVersion: 1,
+    }),
   allowedContentTypes: z
     .array(z.string().min(1).max(256))
     .max(64)
