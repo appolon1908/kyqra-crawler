@@ -53,7 +53,7 @@ export const queueCompletionCallbacks = async (
       progress,
       rows,
     });
-    const configuredPath = (process.env.KYQRA_MIDDLEWARE_WEBHOOK_PATH || '/v1/webhooks/crawler/kyqra').trim();
+    const configuredPath = (process.env.KYQRA_MIDDLEWARE_WEBHOOK_PATH || '/api/v1/crawler/entities/batch').trim();
     const path = configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
     await enqueueOrReviveCallback(
       runtime,
