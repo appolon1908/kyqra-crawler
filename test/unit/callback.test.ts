@@ -65,7 +65,7 @@ describe('signed private-gateway callback delivery', () => {
       ),
     ).rejects.toThrow('callback 503');
   });
-  
+
   it('uses the canonical Codestra headers for Middleware events', async () => {
     const agent = new MockAgent();
     agent.disableNetConnect();
@@ -117,5 +117,4 @@ describe('signed private-gateway callback delivery', () => {
     expect(receivedHeaders['x-codestra-event-id']).toBe(payload.event_id);
     expect(receivedHeaders['idempotency-key']).toBe(payload.idempotency_key);
   });
-
 });
