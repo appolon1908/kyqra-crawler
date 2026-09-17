@@ -13,6 +13,8 @@ grep -Fq 'ref: ${{ github.sha }}' "$workflow"
 grep -Fq 'persist-credentials: false' "$workflow"
 grep -Fq 'SOURCE_DATE_EPOCH=${{ steps.source.outputs.epoch }}' "$workflow"
 grep -Fq 'SOURCE_COMMIT_SHA=${{ env.SOURCE_SHA }}' "$workflow"
+grep -Fq 'IMAGE: ghcr.io/appolon1908-hue/kyqra-crawler-production' "$workflow"
+grep -Fq 'test "$IMAGE" = '\''ghcr.io/appolon1908-hue/kyqra-crawler-production'\''' "$workflow"
 
 ! grep -Eq 'pull-requests:[[:space:]]*write|contents:[[:space:]]*write|issues:[[:space:]]*write' "$workflow"
 test "$(grep -Ec 'uses: [a-z0-9-]+/[a-z0-9-]+@[0-9a-f]{40}$' "$workflow")" = 6
@@ -40,6 +42,7 @@ grep -Fq 'cosign verify-attestation --type spdxjson' "$workflow"
 grep -Fq 'https://token.actions.githubusercontent.com' "$workflow"
 grep -Fq 'sourceCommit == $source' "$workflow"
 grep -Fq 'registryDigest == $digest' "$workflow"
+test "$(grep -Fc 'jq -s -e' "$workflow")" = 4
 grep -Fq 'sha256sum -c SHA256SUMS' "$workflow"
 
 ! grep -Eqi '(^|[[:space:]])(ssh|scp)[[:space:]]|docker compose (up|restart)|systemctl restart|sendmail|canary' "$workflow"

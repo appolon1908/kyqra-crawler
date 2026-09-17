@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      IMAGE: ghcr.io/appolon1908-hue/kyqra-crawler
+      IMAGE: ghcr.io/appolon1908-hue/kyqra-crawler-production
       SOURCE_SHA: ${{ github.sha }}
       TRIVY_IMAGE: aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
       SYFT_IMAGE: anchore/syft@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357
@@ -40,6 +40,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test "$GITHUB_REPOSITORY" = 'appolon1908-hue/kyqra-crawler'
+          test "$IMAGE" = 'ghcr.io/appolon1908-hue/kyqra-crawler-production'
           test "$GITHUB_REF" = 'refs/heads/main'
           test "$GITHUB_REF_PROTECTED" = 'true'
           test "$GITHUB_EVENT_NAME" = 'push' -o "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
@@ -165,7 +166,7 @@ jobs:
           fi
           if ! cosign verify-attestation --type slsaprovenance1 \
             --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
-            "$exact_image" 2>/dev/null | jq -e --arg source "$SOURCE_SHA" --arg digest "$CANDIDATE_DIGEST" '
+            "$exact_image" 2>/dev/null | jq -s -e --arg source "$SOURCE_SHA" --arg digest "$CANDIDATE_DIGEST" '
               any(.[];
                 ((.payload | @base64d | fromjson).predicate.buildDefinition.externalParameters.sourceCommit == $source) and
                 ((.payload | @base64d | fromjson).predicate.buildDefinition.externalParameters.registryDigest == $digest)
@@ -175,7 +176,7 @@ jobs:
           if ! cosign verify-attestation --type spdxjson \
             --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
             "$exact_image" 2>/dev/null | \
-            jq -e 'any(.[]; ((.payload | @base64d | fromjson).predicate.spdxVersion == "SPDX-2.3"))' >/dev/null; then
+            jq -s -e 'any(.[]; ((.payload | @base64d | fromjson).predicate.spdxVersion == "SPDX-2.3"))' >/dev/null; then
             cosign attest --yes --type spdxjson --predicate sbom.spdx.json "$exact_image"
           fi
 
@@ -196,12 +197,12 @@ jobs:
             --certificate-identity "$IDENTITY" --certificate-oidc-issuer "$ISSUER" \
             "$exact_image" > sbom-verification.json
           jq -e 'length > 0' signature-verification.json
-          jq -e --arg source "$SOURCE_SHA" --arg digest "$CANDIDATE_DIGEST" '
+          jq -s -e --arg source "$SOURCE_SHA" --arg digest "$CANDIDATE_DIGEST" '
             any(.[];
               ((.payload | @base64d | fromjson).predicate.buildDefinition.externalParameters.sourceCommit == $source) and
               ((.payload | @base64d | fromjson).predicate.buildDefinition.externalParameters.registryDigest == $digest)
             )' provenance-verification.json
-          jq -e 'any(.[]; ((.payload | @base64d | fromjson).predicate.spdxVersion == "SPDX-2.3"))' \
+          jq -s -e 'any(.[]; ((.payload | @base64d | fromjson).predicate.spdxVersion == "SPDX-2.3"))' \
             sbom-verification.json
           echo "$SOURCE_SHA" > SOURCE_SHA
           echo "$CANDIDATE_DIGEST" > IMAGE_DIGEST

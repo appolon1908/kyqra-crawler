@@ -76,7 +76,7 @@ verify_release() {
   grep -Fxq "MERGED_COMMIT=$EXPECTED_COMMIT" "$RELEASE/RELEASE.env" || die COMMIT_MISMATCH
   grep -Fxq "IMAGE=$EXPECTED_IMAGE" "$RELEASE/RELEASE.env" || die IMAGE_MISMATCH
   grep -Fxq "CLIENT_SERIAL=$EXPECTED_CLIENT_SERIAL" "$RELEASE/RELEASE.env" || die CLIENT_SERIAL_MISMATCH
-  [[ "$EXPECTED_IMAGE" =~ ^ghcr\.io/appolon1908-hue/kyqra-crawler@sha256:[0-9a-f]{64}$ ]] || die FLOATING_IMAGE_DENIED
+  [[ "$EXPECTED_IMAGE" =~ ^ghcr\.io/appolon1908-hue/kyqra-crawler-production@sha256:[0-9a-f]{64}$ ]] || die FLOATING_IMAGE_DENIED
   find "$RELEASE" -type f \( -name '.env' -o -name '*.key' -o -name 'id_rsa' -o -name 'id_ed25519' \) -print -quit | grep -q . && die SECRET_FILE_IN_RELEASE
   grep -RIE '(BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[opsu]_[A-Za-z0-9]{20,})' "$RELEASE" --exclude='RELEASE.bundle.json' >/dev/null && die SECRET_CONTENT_IN_RELEASE
 }

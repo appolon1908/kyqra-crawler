@@ -5,7 +5,7 @@ umask 077
 [[ $# -eq 4 ]] || { echo 'usage: build-release.sh MERGED_COMMIT IMAGE CLIENT_SERIAL OUTPUT_DIR' >&2; exit 64; }
 commit=$1 image=$2 serial=$3 output=$4
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-[[ "$image" =~ ^ghcr\.io/appolon1908-hue/kyqra-crawler@sha256:[0-9a-f]{64}$ ]]
+[[ "$image" =~ ^ghcr\.io/appolon1908-hue/kyqra-crawler-production@sha256:[0-9a-f]{64}$ ]]
 [[ "$serial" =~ ^[0-9A-F]+$ ]]
 [[ ! -e "$output" ]]
 install -d -m 0700 "$output"

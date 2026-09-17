@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export KYQRA_IMAGE='ghcr.io/appolon1908-hue/kyqra-crawler@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+export KYQRA_IMAGE='ghcr.io/appolon1908-hue/kyqra-crawler-production@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 export KYQRA_ENV_FILE='test/fixtures.env'
 export KYQRA_SERVICE_PRINCIPALS_FILE='test/fixtures-service-principals.json'
 export KYQRA_REDIS_PASSWORD_FILE='/tmp/kyqra-ci-redis-password'
