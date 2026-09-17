@@ -1,0 +1,122 @@
+openapi: 3.1.0
+info:
+  title: Kyqra Crawler API for Codestra Middleware
+  version: 2.0.0
+paths:
+  /v1/crawler/jobs:
+    get:
+      operationId: listCrawlerJobs
+      security: [{ oauth2: [crawler.job.read] }]
+      responses: { '200': { description: Tenant-scoped jobs } }
+    post:
+      operationId: createCrawlerJob
+      security: [{ oauth2: [crawler.job.write] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        {
+          '202': { $ref: '#/components/responses/OperationAccepted' },
+          '409': { description: Idempotency conflict },
+        }
+  /v1/crawler/jobs/{job_id}:
+    get:
+      operationId: getCrawlerJob
+      security: [{ oauth2: [crawler.job.read] }]
+      parameters:
+        [{ name: job_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Reconciled job state } }
+  /v1/crawler/jobs/{job_id}/pause:
+    post:
+      operationId: pauseCrawlerJob
+      security: [{ oauth2: [crawler.job.control] }]
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses: { '202': { $ref: '#/components/responses/OperationAccepted' } }
+  /v1/crawler/jobs/{job_id}/resume:
+    post:
+      operationId: resumeCrawlerJob
+      security: [{ oauth2: [crawler.job.control] }]
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses: { '202': { $ref: '#/components/responses/OperationAccepted' } }
+  /v1/crawler/jobs/{job_id}/cancel:
+    post:
+      operationId: cancelCrawlerJob
+      security: [{ oauth2: [crawler.job.control] }]
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses: { '202': { $ref: '#/components/responses/OperationAccepted' } }
+  /v1/crawler/jobs/{job_id}/results:
+    get:
+      operationId: listCrawlerResults
+      security: [{ oauth2: [crawler.result.read] }]
+      parameters:
+        [{ name: job_id, in: path, required: true, schema: { type: string, format: uuid } }]
+      responses: { '200': { description: Tenant/company-isolated normalized results } }
+  /v1/crawler/review-queue:
+    get:
+      operationId: listCrawlerReviewQueue
+      security: [{ oauth2: [crawler.review.read] }]
+      responses: { '200': { description: Authorized review items } }
+  /v1/crawler/reviews/{review_id}/approve:
+    post:
+      operationId: approveCrawlerReview
+      security: [{ oauth2: [crawler.review.decide] }]
+      parameters:
+        - { name: review_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+        - { $ref: '#/components/parameters/IfMatch' }
+      responses: { '202': { $ref: '#/components/responses/OperationAccepted' } }
+  /v1/crawler/suppressions:
+    post:
+      operationId: createCrawlerSuppression
+      security: [{ oauth2: [crawler.suppression.write] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '202': { $ref: '#/components/responses/OperationAccepted' } }
+  /v1/crawler/privacy-deletions:
+    post:
+      operationId: requestCrawlerPrivacyDeletion
+      security: [{ oauth2: [crawler.privacy.write] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses: { '202': { $ref: '#/components/responses/OperationAccepted' } }
+  /v1/crawler/usage:
+    get:
+      operationId: getCrawlerUsage
+      security: [{ oauth2: [crawler.usage.read] }]
+      responses: { '200': { description: Tenant-scoped usage } }
+components:
+  securitySchemes:
+    oauth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.codestra.co/realms/codestra/protocol/openid-connect/token
+          scopes:
+            crawler.job.read: Read crawler jobs
+            crawler.job.write: Request job creation
+            crawler.job.control: Request pause resume or cancel
+            crawler.result.read: Read normalized results
+            crawler.review.read: Read review queue
+            crawler.review.decide: Decide a review item
+            crawler.suppression.write: Request suppression
+            crawler.privacy.write: Request protected privacy action
+            crawler.usage.read: Read usage
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, minLength: 8, maxLength: 180 }
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 128 }
+  responses:
+    OperationAccepted:
+      description: Durable asynchronous operation accepted
