@@ -8,7 +8,7 @@ def validate() -> None:
     path = ROOT / 'docs' / 'integrations' / 'codestra-fabric' / 'manifest.v2.json'
     with path.open('r', encoding='utf-8') as handle:
         manifest = json.load(handle)
-    assert manifest['canonical_repository'] == 'appolon1908-hue/kyqra-crawler'
+    assert manifest['canonical_repository'] == 'ingtrader21-spec/kyqra-crawler'
     assert manifest['integration_boundary'] == 'MIDDLEWARE_ONLY'
     assert manifest['n8n_direct_access'] is False
     assert manifest['odoo_direct_access'] is False

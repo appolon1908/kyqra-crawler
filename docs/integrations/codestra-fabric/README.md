@@ -2,7 +2,7 @@
 
 ## Canonical authority
 
-`appolon1908-hue/kyqra-crawler` is the canonical future repository for Kyqra crawler runtime and integration work. The older `scrapper` repository remains historical/current-lineage evidence until an explicit migration and archive decision is reviewed.
+`ingtrader21-spec/kyqra-crawler` is the canonical future repository for Kyqra crawler runtime and integration work. The older `scrapper` repository remains historical/current-lineage evidence until an explicit migration and archive decision is reviewed.
 
 Kyqra owns crawl jobs, target policy, queue state, worker execution, raw results, normalized results, review state, delivery state, retention and crawler-specific privacy actions. Crawlee, Playwright, BullMQ/Redis and the results database remain internal.
 

@@ -1,6 +1,6 @@
 # Kyqra Crawler
 
-> **Canonical crawler authority:** `appolon1908-hue/kyqra-crawler`.
+> **Canonical crawler authority:** `ingtrader21-spec/kyqra-crawler`.
 >
 > The older `appolon1908-hue/kyqra` repository is legacy/historical source and must not
 > become a competing crawler API, queue, credential set, job ledger or production runtime.

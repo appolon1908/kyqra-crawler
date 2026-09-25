@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      IMAGE: ghcr.io/appolon1908-hue/kyqra-crawler-production
+      IMAGE: ghcr.io/ingtrader21-spec/kyqra-crawler-production
       SOURCE_SHA: ${{ github.sha }}
       TRIVY_IMAGE: aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
       SYFT_IMAGE: anchore/syft@sha256:f94e5d9fce1f2278491a8e3a63bd5f6ddb81fdfdbb8bf7a1637565c1d5344357
@@ -39,8 +39,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$GITHUB_REPOSITORY" = 'appolon1908-hue/kyqra-crawler'
-          test "$IMAGE" = 'ghcr.io/appolon1908-hue/kyqra-crawler-production'
+          test "$GITHUB_REPOSITORY" = 'ingtrader21-spec/kyqra-crawler'
+          test "$IMAGE" = 'ghcr.io/ingtrader21-spec/kyqra-crawler-production'
           test "$GITHUB_REF" = 'refs/heads/main'
           test "$GITHUB_REF_PROTECTED" = 'true'
           test "$GITHUB_EVENT_NAME" = 'push' -o "$GITHUB_EVENT_NAME" = 'workflow_dispatch'
@@ -155,7 +155,7 @@ jobs:
         if: steps.final_tag.outputs.exists != 'true'
         env:
           CANDIDATE_DIGEST: ${{ steps.build.outputs.digest }}
-          IDENTITY: https://github.com/appolon1908-hue/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
+          IDENTITY: https://github.com/ingtrader21-spec/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
           ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -Eeuo pipefail
@@ -183,7 +183,7 @@ jobs:
       - name: Verify exact GitHub OIDC signing identity and predicates
         env:
           CANDIDATE_DIGEST: ${{ steps.build.outputs.digest }}
-          IDENTITY: https://github.com/appolon1908-hue/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
+          IDENTITY: https://github.com/ingtrader21-spec/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
           ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -Eeuo pipefail
