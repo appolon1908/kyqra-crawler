@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import {
@@ -6,6 +8,11 @@ import {
   getJobEvents,
   getJobPayload,
   getJobStatus,
+  createSourceProfile,
+  disableSourceProfile,
+  getSourceProfile,
+  listSourceProfiles,
+  type SourceProfileRow,
   listJobs,
   ownsJob,
   recordJobEnqueueOutcome,
@@ -20,6 +27,8 @@ import {
   storedCompletionProgress,
 } from '../queues/completion-callbacks.js';
 import type { Runtime } from '../types.js';
+import { sourceProfileSchema } from '../config/schema.js';
+import { validateCrawlTarget } from '../delivery/security.js';
 import { executeDurableCommand } from './idempotency.js';
 import { kyqraOpenApi } from './openapi.js';
 
@@ -63,6 +72,86 @@ export const registerCanonicalApi = (app: FastifyInstance, runtime: Runtime): vo
     tenant_id: request.servicePrincipal.tenant_id,
     capabilities: ['crawl.jobs', 'crawl.results', 'crawl.events', 'operations'],
   }));
+
+  const sourceView = (row: SourceProfileRow) => ({
+    id: row.id,
+    source_id: row.id,
+    tenant_id: row.tenant_id,
+    name: row.name,
+    base_url: row.base_url,
+    enabled: row.enabled,
+    profile: row.profile,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  });
+
+  app.post('/api/v1/sources', async (request, reply) => {
+    const parsed = sourceProfileSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_source', details: parsed.error.issues });
+    }
+    try {
+      await validateCrawlTarget(parsed.data.baseUrl);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'crawl_target_denied';
+      return reply.code(400).send({ error: message });
+    }
+    return executeDurableCommand(
+      runtime,
+      request,
+      reply,
+      { action: 'source.create', resource: 'sources', payload: parsed.data },
+      async () => {
+        const row = await createSourceProfile(runtime.db, {
+          id: crypto.randomUUID(),
+          tenantId: request.servicePrincipal.tenant_id,
+          profile: parsed.data,
+        });
+        return { code: 201, body: sourceView(row) };
+      },
+    );
+  });
+
+  app.get('/api/v1/sources', async (request) => ({
+    items: (await listSourceProfiles(runtime.db, request.servicePrincipal.tenant_id)).map(
+      sourceView,
+    ),
+  }));
+
+  app.get<{ Params: IdParams }>('/api/v1/sources/:id', async (request, reply) => {
+    const row = await getSourceProfile(
+      runtime.db,
+      request.params.id,
+      request.servicePrincipal.tenant_id,
+    );
+    return row ? sourceView(row) : notFound(reply);
+  });
+
+  app.post<{ Params: IdParams }>('/api/v1/sources/:id/disable', async (request, reply) => {
+    const current = await getSourceProfile(
+      runtime.db,
+      request.params.id,
+      request.servicePrincipal.tenant_id,
+    );
+    if (!current) return notFound(reply);
+    return executeDurableCommand(
+      runtime,
+      request,
+      reply,
+      { action: 'source.disable', resource: `sources/${request.params.id}`, payload: {} },
+      async () => {
+        const disabled = await disableSourceProfile(
+          runtime.db,
+          request.params.id,
+          request.servicePrincipal.tenant_id,
+        );
+        return disabled
+          ? { code: 200, body: { id: request.params.id, status: 'disabled' } }
+          : { code: 409, body: { id: request.params.id, error: 'source_state_changed' } };
+      },
+    );
+  });
+
   app.get('/api/v1/jobs', async (request) => ({
     items: await listJobs(runtime.db, request.servicePrincipal.tenant_id, 200),
   }));

@@ -382,11 +382,7 @@ describe('HTTP job submission through real Redis and Postgres', () => {
       status: 'SUCCEEDED',
       callbacks_reconciled: true,
     });
-    const resultRow = await runtime.db.query<{ id: string }>(
-      'select id::text from results where job_id=$1 order by id limit 1',
-      [jobId],
-    );
-    const callbackJobId = `kyqra-result-${jobId}-${resultRow.rows[0]?.id}`;
+    const callbackJobId = `kyqra-event-${jobId}-completed`;
     const failingCallbackWorker = new Worker<CallbackJobData>(
       'callbacks',
       async () => {

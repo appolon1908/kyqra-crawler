@@ -38,7 +38,8 @@ const targetV2Tables = [
   'sessions',
   'tenants',
 ];
-const targetTables = [...targetV2Tables, 'command_requests', 'job_events'].sort();
+const targetV3Tables = [...targetV2Tables, 'command_requests', 'job_events'].sort();
+const targetTables = [...targetV3Tables, 'source_profiles'].sort();
 
 describe('PostgreSQL migrations', () => {
   let postgres: StartedPostgreSqlContainer;
@@ -105,7 +106,7 @@ describe('PostgreSQL migrations', () => {
     );
 
     await migrateDatabase(databaseUrl, 'up', 1);
-    expect(await applicationTables()).toEqual(targetTables);
+    expect(await applicationTables()).toEqual(targetV3Tables);
 
     const rollbackDuplicateJobs = [
       '00000000-0000-4000-8000-000000000010',
