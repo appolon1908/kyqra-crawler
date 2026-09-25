@@ -3,10 +3,17 @@ const successResponses = {
   '202': { description: 'Durable command accepted' },
 };
 
+const standardErrors = {
+  '400': { description: 'Invalid request or required command headers' },
+  '401': { description: 'Missing or invalid bearer authentication' },
+  '403': { description: 'Caller is not authorized for this operation' },
+  '404': { description: 'Resource not found in the caller tenant' },
+};
+
 const operation = (summary: string, secured = true) => ({
   summary,
   ...(secured ? { security: [{ bearerAuth: [] }] } : { security: [] }),
-  responses: successResponses,
+  responses: { ...successResponses, ...standardErrors },
 });
 
 const idParameter = {
@@ -41,6 +48,7 @@ const identifiedCommand = (summary: string) => ({
   parameters: [idParameter, ...commandHeaders],
   responses: {
     ...successResponses,
+    ...standardErrors,
     '409': { description: 'State or idempotency conflict' },
   },
 });
@@ -106,6 +114,7 @@ export const kyqraOpenApi = {
         },
         responses: {
           ...successResponses,
+          ...standardErrors,
           '409': { description: 'Idempotency conflict or in-progress reservation' },
           '429': { description: 'Tenant rate limit exceeded' },
           '503': { description: 'Durable job exists but queue submission failed' },
