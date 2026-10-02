@@ -1,0 +1,25 @@
+schema_version: 1
+canonical_owner: "appolon1908"
+repository: "appolon1908/kyqra-crawler"
+canonical_url: "https://github.com/appolon1908/kyqra-crawler"
+default_branch_observed: "main"
+classification:
+  type: "data-platform"
+  subtype: "ingestion-etl"
+  standalone: true
+  integration_boundary: "api-or-endpoint"
+lifecycle:
+  promotion_order: [development, testing, staging, production]
+  development: "development"
+  testing: "testing"
+  staging: "staging"
+  production: "production"
+  exact_branch_exception: false
+governance:
+  canonical_owner_is_authority: true
+  transferred_owner_refs_are_non_authoritative: true
+  forward_only_promotion: true
+  force_push_allowed: false
+integration:
+  middleware_v3: "optional-orchestration-boundary; not a standalone runtime dependency"
+  edge_path_when_applicable: "Caddy -> Kong -> Middleware :8095"
