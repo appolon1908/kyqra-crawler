@@ -28,7 +28,7 @@ RUN mkdir -p /app/storage && chown -R pwuser:pwuser /app/storage
 FROM scratch
 ARG SOURCE_COMMIT_SHA
 COPY --from=runtime / /
-LABEL org.opencontainers.image.source="https://github.com/appolon1908-hue/kyqra-crawler" \
+LABEL org.opencontainers.image.source="https://github.com/ingtrader21-spec/kyqra-crawler" \
       org.opencontainers.image.revision="$SOURCE_COMMIT_SHA" \
       org.opencontainers.image.version="$SOURCE_COMMIT_SHA"
 WORKDIR /app
