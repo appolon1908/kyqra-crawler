@@ -29,13 +29,13 @@
     "@crawlee/playwright": "3.18.1",
     "bullmq": "5.81.3",
     "cheerio": "1.2.0",
-    "fastify": "5.12.1",
+    "fastify": "5.12.8",
     "ioredis": "5.7.0",
     "node-pg-migrate": "9.0.0",
     "pg": "8.16.3",
     "playwright": "1.62.1",
-    "undici": "7.29.0",
-    "zod": "4.1.5"
+    "undici": "7.30.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@eslint/js": "9.34.0",
@@ -45,7 +45,7 @@
     "@types/node": "22.18.0",
     "@types/pg": "8.15.5",
     "@types/supertest": "7.2.1",
-    "@vitest/coverage-v8": "4.1.11",
+    "@vitest/coverage-v8": "4.1.12",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "eslint": "9.34.0",
@@ -55,7 +55,7 @@
     "testcontainers": "12.1.0",
     "typescript": "5.9.2",
     "typescript-eslint": "8.42.0",
-    "vitest": "4.1.11"
+    "vitest": "4.1.12"
   },
   "engines": {
     "node": ">=22.12.0"
