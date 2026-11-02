@@ -39,7 +39,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$GITHUB_REPOSITORY" = 'appolon1908-hue/kyqra-crawler'
+          test "$GITHUB_REPOSITORY" = 'appolon1908/kyqra-crawler'
+          test "$GITHUB_REPOSITORY_ID" = '1334792686'
           test "$IMAGE" = 'ghcr.io/appolon1908-hue/kyqra-crawler-production'
           test "$GITHUB_REF" = 'refs/heads/main'
           test "$GITHUB_REF_PROTECTED" = 'true'
@@ -155,7 +156,7 @@ jobs:
         if: steps.final_tag.outputs.exists != 'true'
         env:
           CANDIDATE_DIGEST: ${{ steps.build.outputs.digest }}
-          IDENTITY: https://github.com/appolon1908-hue/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
+          IDENTITY: https://github.com/appolon1908/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
           ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -Eeuo pipefail
@@ -183,7 +184,7 @@ jobs:
       - name: Verify exact GitHub OIDC signing identity and predicates
         env:
           CANDIDATE_DIGEST: ${{ steps.build.outputs.digest }}
-          IDENTITY: https://github.com/appolon1908-hue/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
+          IDENTITY: https://github.com/appolon1908/kyqra-crawler/.github/workflows/publish-kyqra-production.yml@refs/heads/main
           ISSUER: https://token.actions.githubusercontent.com
         run: |
           set -Eeuo pipefail
