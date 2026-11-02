@@ -100,10 +100,7 @@
       "workflow": ".github/workflows/ci.yml"
     }
   ],
-  "replaces_contexts": [
-    "codestra-control-plane",
-    "codestra/control-plane"
-  ],
+  "replaces_contexts": ["codestra-control-plane", "codestra/control-plane"],
   "preserve": [
     "other_required_checks",
     "review_requirements",

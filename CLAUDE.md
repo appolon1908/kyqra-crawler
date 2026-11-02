@@ -1,4 +1,5 @@
 <!-- CODESTRA_AGENT_PROTOCOL_V1 -->
+
 ## Claude Code — Codestra continuation contract
 
 Read first:
