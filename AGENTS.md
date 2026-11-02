@@ -1,4 +1,5 @@
 <!-- CODESTRA_AGENT_PROTOCOL_V1 -->
+
 ## Codestra continuation contract
 
 Canonical protocol:
@@ -8,6 +9,7 @@ Quick start:
 https://github.com/ingtrader21-spec/codestra/blob/main/docs/AGENT-QUICKSTART.md
 
 Before changing code:
+
 1. Read `.codestra-mission/*` when present.
 2. Read the active Linear issue and linked Notion architecture.
 3. Inspect exact Git branch/HEAD/dirty/worktree/upstream/PR/CI state.

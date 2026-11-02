@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "policy_kind": "source_merge",
+  "repository": "appolon1908/kyqra-crawler",
+  "authorization_date": "2026-11-02",
+  "required_checks": [
+    {
+      "context": "lint",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "format-check",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "typecheck",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "unit-tests",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "integration-tests",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "migration-roundtrip",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "security-tests",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "secret-scan",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "dependency-audit",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "docker-compose-validate",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "public-route-policy-tests",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "mtls-configuration-tests",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "rollback-script-syntax",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "release-manifest-validation",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "signing-workflow-security",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "docker-build",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "container-vulnerability-scan",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "non-root-container-check",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "context": "health-endpoint-tests",
+      "integration_id": 15368,
+      "workflow": ".github/workflows/ci.yml"
+    }
+  ],
+  "replaces_contexts": ["codestra-control-plane", "codestra/control-plane"],
+  "preserve": [
+    "other_required_checks",
+    "review_requirements",
+    "ref_conditions",
+    "bypass_actors",
+    "enforcement",
+    "force_push_protection",
+    "deletion_protection",
+    "deployment_authority"
+  ],
+  "production_activation_authorized": false,
+  "note": "GitHub rulesets remain the enforcement authority. This source-validation policy is not custom-controller certification or deployment authorization."
+}

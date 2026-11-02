@@ -5,6 +5,7 @@
 > Repository-local visual architecture. Keep these diagrams aligned with code, contracts, data ownership and deployment.
 
 ## 1. System context
+
 ```mermaid
 flowchart LR
  A["Jobs / operators"] --> B["Crawler API + workers"]
@@ -14,6 +15,7 @@ flowchart LR
 ```
 
 ## 2. Internal component architecture
+
 ```mermaid
 flowchart TB
  I["Entrypoint / UI / API / CLI"] --> P["Identity, policy, validation"]
@@ -25,6 +27,7 @@ flowchart TB
 ```
 
 ## 3. Critical flow
+
 ```mermaid
 sequenceDiagram
  participant U as Caller
@@ -44,6 +47,7 @@ sequenceDiagram
 ```
 
 ## 4. Deployment and promotion
+
 ```mermaid
 flowchart LR
  F["Feature branch"] --> T["Tests / validation"]
@@ -58,6 +62,7 @@ flowchart LR
 ```
 
 ## 5. Observability and recovery
+
 ```mermaid
 flowchart LR
  R["kyqra-crawler"] --> M["Metrics"]
@@ -72,6 +77,7 @@ flowchart LR
 ```
 
 ## Ownership notes
+
 - **Role:** Policy-aware web crawler and enrichment service
 - **Primary boundary:** Crawler API + workers
 - **State/config:** crawl queue / extracted data

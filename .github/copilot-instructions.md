@@ -1,4 +1,5 @@
 <!-- CODESTRA_AGENT_PROTOCOL_V1 -->
+
 ## Codestra coding-agent continuation contract
 
 Canonical protocol:
